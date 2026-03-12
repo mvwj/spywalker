@@ -1,0 +1,57 @@
+﻿<resources>
+    <string name="app_name">SpyWalker</string>
+
+    <string name="permission_emoji">🚶</string>
+    <string name="permission_title">Разрешение на геолокацию</string>
+    <string name="permission_description">Для отслеживания ваших прогулок приложению нужен доступ к геолокации. Разрешение для работы в фоне приложение запросит отдельно при запуске трекинга.</string>
+    <string name="grant_access">Разрешить доступ</string>
+    <string name="open_settings">Настройки</string>
+    <string name="requesting_permissions">Запрашиваем разрешения...</string>
+
+    <string name="city_selection_title">Выбор города</string>
+    <string name="back">Назад</string>
+    <string name="downloaded_cities">Загруженные города</string>
+    <string name="search_results">Результаты поиска</string>
+    <string name="delete_city_title">Удалить город?</string>
+    <string name="delete_city_message">Город %1$s и данные о его дорогах будут удалены.</string>
+    <string name="delete_action">Удалить</string>
+    <string name="cancel_action">Отмена</string>
+    <string name="city_search_placeholder">Введите название города...</string>
+    <string name="search_action">Найти</string>
+    <string name="searching_action">Поиск...</string>
+    <string name="loading_action">Загрузка...</string>
+    <string name="empty_city_title">Найдите и загрузите город</string>
+    <string name="empty_city_hint">Введите название города выше</string>
+    <string name="download_action">Загрузить</string>
+    <string name="selected_action">Выбран</string>
+
+    <string name="city_label">Город</string>
+    <string name="choose_city">Выберите город</string>
+    <string name="tap_to_download_roads">Нажмите, чтобы загрузить дороги</string>
+    <string name="roads_and_length">%1$d дорог • %2$.1f км</string>
+    <string name="explored_roads">Исследовано дорог</string>
+    <string name="roads_fraction">%1$d / %2$d дорог</string>
+    <string name="length_fraction_km">%1$.1f / %2$.1f км</string>
+    <string name="coverage_label">Покрытие: %1$.1f%%</string>
+    <string name="recording_label">Запись</string>
+    <string name="walks_label">Прогулок</string>
+    <string name="distance_label">Пройдено</string>
+    <string name="current_label">Сейчас</string>
+    <string name="exploration_label">Исследование</string>
+    <string name="stop_action">Остановить</string>
+    <string name="start_action">Начать</string>
+    <string name="distance_km">%1$.1f км</string>
+    <string name="focus_location_action">Фокус на текущем местоположении</string>
+    <string name="walk_history_action">Список прогулок</string>
+    <string name="walk_history_title">Прогулки</string>
+    <string name="walk_history_empty">Пока нет сохранённых прогулок.</string>
+    <string name="delete_walk_title">Удалить прогулку?</string>
+    <string name="delete_walk_message">Будут удалены точки прогулки и закрашенные ею участки дорог.</string>
+    <string name="walk_active_label">Идёт сейчас</string>
+    <string name="walk_session_stats">%1$s • %2$.2f км прогулки • %3$.2f км дорог • %4$d точек</string>
+
+    <string name="notification_channel_name">SpyWalker</string>
+    <string name="notification_channel_description">Отслеживание маршрута в фоне</string>
+    <string name="notification_title">SpyWalker</string>
+    <string name="notification_text">Отслеживаю ваш маршрут...</string>
+</resources>
