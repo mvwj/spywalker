@@ -25,6 +25,7 @@ data class MapUiState(
     val currentPointsCount: Int = 0,
     val currentLocation: CurrentLocationSnapshot? = null,
     val focusRequestId: Int = 0,
+    val focusZoomLevel: Double = 18.0,
     val totalSessions: Int = 0,
     val totalDistanceKm: Double = 0.0,
     val totalWalkingTimeMs: Long = 0L,
@@ -48,6 +49,11 @@ class MapViewModel @Inject constructor(
     private val osmRepository: OsmRepository,
     application: Application
 ) : AndroidViewModel(application) {
+    companion object {
+        private const val NORMAL_FOCUS_ZOOM = 18.0
+        private const val CLOSE_FOCUS_ZOOM = 19.0
+    }
+
     
     private val _uiState = MutableStateFlow(MapUiState())
     val uiState: StateFlow<MapUiState> = _uiState.asStateFlow()
@@ -197,7 +203,17 @@ class MapViewModel @Inject constructor(
     }
 
     fun requestFocusOnCurrentLocation() {
-        _uiState.update { it.copy(focusRequestId = it.focusRequestId + 1) }
+        _uiState.update {
+            val nextZoom = if (it.focusZoomLevel >= CLOSE_FOCUS_ZOOM) {
+                NORMAL_FOCUS_ZOOM
+            } else {
+                CLOSE_FOCUS_ZOOM
+            }
+            it.copy(
+                focusRequestId = it.focusRequestId + 1,
+                focusZoomLevel = nextZoom
+            )
+        }
     }
 
     fun showWalkSessions() {

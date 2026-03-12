@@ -62,6 +62,7 @@ interface CityDao {
         """
         SELECT * FROM road_segments
         WHERE cityOsmId = :cityOsmId
+        AND isStatsExcluded = 0
         AND osmId IN (
             SELECT DISTINCT roadOsmId FROM road_coverage_chunks WHERE cityOsmId = :cityOsmId
         )
@@ -84,16 +85,24 @@ interface CityDao {
     @Query("SELECT * FROM road_points WHERE roadOsmId = :roadOsmId ORDER BY orderIndex")
     suspend fun getRoadPoints(roadOsmId: Long): List<RoadPoint>
     
-    @Query("SELECT COUNT(*) FROM road_segments WHERE cityOsmId = :cityOsmId")
+    @Query("SELECT COUNT(*) FROM road_segments WHERE cityOsmId = :cityOsmId AND isStatsExcluded = 0")
     fun getTotalRoadsCount(cityOsmId: Long): Flow<Int>
     
     @Query("SELECT COUNT(*) FROM road_segments WHERE cityOsmId = :cityOsmId AND isExplored = 1")
     fun getExploredRoadsCount(cityOsmId: Long): Flow<Int>
 
-    @Query("SELECT COUNT(DISTINCT roadOsmId) FROM road_coverage_chunks WHERE cityOsmId = :cityOsmId")
+    @Query(
+        """
+        SELECT COUNT(DISTINCT chunks.roadOsmId)
+        FROM road_coverage_chunks AS chunks
+        INNER JOIN road_segments AS roads ON roads.osmId = chunks.roadOsmId
+        WHERE chunks.cityOsmId = :cityOsmId
+        AND roads.isStatsExcluded = 0
+        """
+    )
     fun getExploredRoadsCountFromChunks(cityOsmId: Long): Flow<Int>
     
-    @Query("SELECT SUM(lengthMeters) FROM road_segments WHERE cityOsmId = :cityOsmId")
+    @Query("SELECT SUM(lengthMeters) FROM road_segments WHERE cityOsmId = :cityOsmId AND isStatsExcluded = 0")
     fun getTotalRoadLength(cityOsmId: Long): Flow<Double?>
     
     @Query("SELECT SUM(lengthMeters) FROM road_segments WHERE cityOsmId = :cityOsmId AND isExplored = 1")
@@ -102,10 +111,12 @@ interface CityDao {
     @Query(
         """
         SELECT COALESCE(SUM(lengthMeters), 0) FROM (
-            SELECT roadOsmId, chunkIndex, MAX(lengthMeters) AS lengthMeters
-            FROM road_coverage_chunks
-            WHERE cityOsmId = :cityOsmId
-            GROUP BY roadOsmId, chunkIndex
+            SELECT chunks.roadOsmId, chunks.chunkIndex, MAX(chunks.lengthMeters) AS lengthMeters
+            FROM road_coverage_chunks AS chunks
+            INNER JOIN road_segments AS roads ON roads.osmId = chunks.roadOsmId
+            WHERE chunks.cityOsmId = :cityOsmId
+            AND roads.isStatsExcluded = 0
+            GROUP BY chunks.roadOsmId, chunks.chunkIndex
         )
         """
     )
@@ -118,6 +129,7 @@ interface CityDao {
     @Query("""
         SELECT * FROM road_segments 
         WHERE cityOsmId = :cityOsmId 
+        AND isStatsExcluded = 0
         AND minLat <= :lat + :tolerance 
         AND maxLat >= :lat - :tolerance
         AND minLon <= :lon + :tolerance 
@@ -134,6 +146,7 @@ interface CityDao {
     @Query("""
         SELECT * FROM road_segments
         WHERE cityOsmId = :cityOsmId
+        AND isStatsExcluded = 0
         AND minLat <= :lat + :tolerance
         AND maxLat >= :lat - :tolerance
         AND minLon <= :lon + :tolerance
@@ -156,10 +169,12 @@ interface CityDao {
         UPDATE cities 
         SET exploredRoadLengthMeters = (
             SELECT COALESCE(SUM(lengthMeters), 0) FROM (
-                SELECT roadOsmId, chunkIndex, MAX(lengthMeters) AS lengthMeters
-                FROM road_coverage_chunks
-                WHERE cityOsmId = :cityOsmId
-                GROUP BY roadOsmId, chunkIndex
+                SELECT chunks.roadOsmId, chunks.chunkIndex, MAX(chunks.lengthMeters) AS lengthMeters
+                FROM road_coverage_chunks AS chunks
+                INNER JOIN road_segments AS roads ON roads.osmId = chunks.roadOsmId
+                WHERE chunks.cityOsmId = :cityOsmId
+                AND roads.isStatsExcluded = 0
+                GROUP BY chunks.roadOsmId, chunks.chunkIndex
             )
         ),
         lastUpdatedAt = :timestamp

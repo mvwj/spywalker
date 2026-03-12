@@ -1,7 +1,11 @@
 ﻿package com.spywalker.ui
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.drawable.BitmapDrawable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -45,7 +49,9 @@ import com.spywalker.ui.theme.*
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.Polygon
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,6 +75,7 @@ fun MapScreen(
             coveredRoadChunks = uiState.coveredRoadChunks,
             currentLocation = uiState.currentLocation,
             focusRequestId = uiState.focusRequestId,
+            focusZoomLevel = uiState.focusZoomLevel,
             modifier = Modifier.fillMaxSize()
         )
         
@@ -127,9 +134,11 @@ fun OsmMapView(
     coveredRoadChunks: List<RoadCoverageChunk>,
     currentLocation: CurrentLocationSnapshot?,
     focusRequestId: Int,
+    focusZoomLevel: Double,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val locationMarkerIcon = remember(context) { createCurrentLocationMarkerDrawable(context) }
     val mapView = remember(context) {
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
@@ -152,7 +161,7 @@ fun OsmMapView(
         mapView.overlays.clear()
 
         coveredRoadChunks
-            .distinctBy { Triple(it.roadOsmId, it.sessionId, it.chunkIndex) }
+            .distinctBy { it.roadOsmId to it.chunkIndex }
             .forEach { chunk ->
                 val polyline = Polyline().apply {
                     outlinePaint.color = Color.parseColor("#00BFA6")
@@ -172,19 +181,24 @@ fun OsmMapView(
             }
 
         currentLocation?.let { location ->
-            val currentLocationOverlay = Polyline().apply {
-                outlinePaint.color = Color.parseColor("#4FC3F7")
-                outlinePaint.strokeWidth = 18f
-                outlinePaint.alpha = 210
-                outlinePaint.strokeCap = Paint.Cap.ROUND
-                setPoints(
-                    listOf(
-                        GeoPoint(location.latitude, location.longitude),
-                        GeoPoint(location.latitude, location.longitude)
-                    )
-                )
+            val geoPoint = GeoPoint(location.latitude, location.longitude)
+
+            val accuracyCircle = Polygon().apply {
+                points = Polygon.pointsAsCircle(geoPoint, location.accuracy.toDouble().coerceAtLeast(6.0))
+                fillPaint.color = Color.parseColor("#334FC3F7")
+                fillPaint.style = Paint.Style.FILL
+                outlinePaint.color = Color.parseColor("#884FC3F7")
+                outlinePaint.strokeWidth = 2f
             }
-            mapView.overlays.add(currentLocationOverlay)
+            mapView.overlays.add(accuracyCircle)
+
+            val currentLocationMarker = Marker(mapView).apply {
+                position = geoPoint
+                icon = locationMarkerIcon
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                title = "Current location"
+            }
+            mapView.overlays.add(currentLocationMarker)
         }
 
         mapView.invalidate()
@@ -194,7 +208,7 @@ fun OsmMapView(
         if (focusRequestId > 0) {
             currentLocation?.let { location ->
                 mapView.controller.animateTo(GeoPoint(location.latitude, location.longitude))
-                mapView.controller.setZoom(18.0)
+                mapView.controller.setZoom(focusZoomLevel)
             }
         }
     }
@@ -233,6 +247,28 @@ private fun MapActionButtons(
             )
         }
     }
+}
+
+private fun createCurrentLocationMarkerDrawable(context: Context): BitmapDrawable {
+    val density = context.resources.displayMetrics.density
+    val sizePx = (28 * density).toInt().coerceAtLeast(28)
+    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+
+    val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+    val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#4FC3F7")
+        style = Paint.Style.FILL
+    }
+
+    val center = sizePx / 2f
+    canvas.drawCircle(center, center, sizePx * 0.36f, outerPaint)
+    canvas.drawCircle(center, center, sizePx * 0.24f, innerPaint)
+
+    return BitmapDrawable(context.resources, bitmap)
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)

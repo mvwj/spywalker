@@ -17,7 +17,7 @@ import androidx.room.RoomDatabase
         RoadPoint::class,
         RoadCoverageChunk::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class WalkDatabase : RoomDatabase() {

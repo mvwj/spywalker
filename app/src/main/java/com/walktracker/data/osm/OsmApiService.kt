@@ -66,9 +66,6 @@ object OverpassQueryBuilder {
               way["highway"="living_street"](${south},${west},${north},${east});
               way["highway"="unclassified"](${south},${west},${north},${east});
               way["highway"="pedestrian"](${south},${west},${north},${east});
-              way["highway"="footway"](${south},${west},${north},${east});
-              way["highway"="path"](${south},${west},${north},${east});
-              way["highway"="cycleway"](${south},${west},${north},${east});
             );
             out geom;
         """.trimIndent()

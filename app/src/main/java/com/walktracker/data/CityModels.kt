@@ -71,6 +71,11 @@ data class RoadSegment(
     
     // Road length in meters
     val lengthMeters: Double,
+
+    // Logical/statistical road that should be used for progress and totals.
+    // Parallel duplicate carriageways can point to the same representative road.
+    val statsRoadOsmId: Long,
+    val isStatsExcluded: Boolean = false,
     
     // Is this road explored?
     val isExplored: Boolean = false,

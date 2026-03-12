@@ -22,10 +22,20 @@ class OsmRepository @Inject constructor(
     companion object {
         private const val EARTH_RADIUS_METERS = 6_371_000.0
         private const val MAX_USABLE_SNAP_ACCURACY_METERS = 35f
-        private const val MAX_ROAD_MATCH_DISTANCE_METERS = 25.0
+        private const val MAX_ROAD_MATCH_DISTANCE_METERS = 35.0
         private const val ROAD_CHUNK_SIZE_METERS = 20.0
         private const val COVERAGE_RADIUS_METERS = 18.0
+        private const val MAX_PARALLEL_ROAD_DISTANCE_METERS = 32.0
+        private const val MIN_PARALLEL_ROAD_DISTANCE_METERS = 4.0
+        private const val MIN_PARALLEL_LENGTH_RATIO = 0.55
+        private const val MAX_PARALLEL_ORIENTATION_DIFF_DEGREES = 18.0
+        private const val ROAD_SWITCH_PENALTY_METERS = 8.0
+        private const val SAME_ROAD_BONUS_METERS = 10.0
+        private const val SNAP_JUMP_PENALTY_METERS = 16.0
+        private const val MAX_REASONABLE_SNAP_SPEED_MPS = 4.5
     }
+
+    private val sessionMatchStates = mutableMapOf<Long, MatchState>()
     
     // === City Search ===
     
@@ -99,11 +109,14 @@ class OsmRepository @Inject constructor(
                         )
                     }
                 )
+                val normalizedSegments = assignStatisticalRoads(segments, points)
                 
-                onProgress(0.85f, "Сохранение ${segments.size} дорог...")
+                onProgress(0.85f, "Сохранение ${normalizedSegments.count { !it.isStatsExcluded }} дорог...")
                 
                 // Calculate total road length
-                val totalLength = segments.sumOf { it.lengthMeters }
+                val totalLength = normalizedSegments
+                    .filterNot { it.isStatsExcluded }
+                    .sumOf { it.lengthMeters }
                 
                 // Create City entity
                 val city = City(
@@ -116,7 +129,7 @@ class OsmRepository @Inject constructor(
                     boundsEast = east,
                     centerLat = searchResult.latitude.toDouble(),
                     centerLon = searchResult.longitude.toDouble(),
-                    totalRoadSegments = segments.size,
+                    totalRoadSegments = normalizedSegments.count { !it.isStatsExcluded },
                     totalRoadLengthMeters = totalLength,
                     isSelected = true
                 )
@@ -126,11 +139,11 @@ class OsmRepository @Inject constructor(
                 onProgress(0.90f, "Сохранение города...")
                 cityDao.insertCity(city)
                 onProgress(0.94f, "Сохранение сегментов дорог...")
-                cityDao.insertRoadSegments(segments)
+                cityDao.insertRoadSegments(normalizedSegments)
                 onProgress(0.98f, "Сохранение геометрии дорог...")
                 cityDao.insertRoadPoints(points)
                 
-                onProgress(1.0f, "Готово! Загружено ${segments.size} дорог")
+                onProgress(1.0f, "Готово! Загружено ${normalizedSegments.count { !it.isStatsExcluded }} дорог")
                 
                 Result.success(city)
                 
@@ -222,7 +235,8 @@ class OsmRepository @Inject constructor(
                 maxLat = lats.maxOrNull() ?: 0.0,
                 minLon = lons.minOrNull() ?: 0.0,
                 maxLon = lons.maxOrNull() ?: 0.0,
-                lengthMeters = length * 1000 // km to meters
+                lengthMeters = length * 1000, // km to meters
+                statsRoadOsmId = way.id
             )
             segments.add(segment)
             
@@ -302,13 +316,15 @@ class OsmRepository @Inject constructor(
     ): Int {
         val city = cityDao.getSelectedCitySync() ?: return 0
         if (accuracy > MAX_USABLE_SNAP_ACCURACY_METERS) return 0
+        val now = System.currentTimeMillis()
+        val previousMatch = sessionMatchStates[sessionId]
         
         // Find nearby roads
         val nearbyRoads = cityDao.findNearbyRoads(
             cityOsmId = city.osmId,
             lat = lat,
             lon = lon,
-            tolerance = 0.0003 // ~30 meters
+            tolerance = 0.00045 // ~45-50 meters
         )
         if (nearbyRoads.isEmpty()) return 0
         
@@ -320,20 +336,62 @@ class OsmRepository @Inject constructor(
 
             val projection = projectPointToPolyline(lat, lon, points)
             if (projection.distanceToRoadMeters <= MAX_ROAD_MATCH_DISTANCE_METERS) {
+                var score = projection.distanceToRoadMeters
+                previousMatch?.let { previous ->
+                    score += if (previous.roadOsmId == road.osmId) {
+                        -SAME_ROAD_BONUS_METERS
+                    } else {
+                        ROAD_SWITCH_PENALTY_METERS
+                    }
+
+                    val timeDeltaSeconds = ((now - previous.timestamp) / 1000.0).coerceAtLeast(1.0)
+                    val snappedMoveMeters = haversineDistance(
+                        previous.snappedLatitude,
+                        previous.snappedLongitude,
+                        projection.snappedLatitude,
+                        projection.snappedLongitude
+                    ) * 1000.0
+                    val rawMoveMeters = haversineDistance(
+                        previous.rawLatitude,
+                        previous.rawLongitude,
+                        lat,
+                        lon
+                    ) * 1000.0
+                    val snappedSpeedMps = snappedMoveMeters / timeDeltaSeconds
+
+                    if (
+                        snappedSpeedMps > MAX_REASONABLE_SNAP_SPEED_MPS &&
+                        rawMoveMeters < snappedMoveMeters * 0.6
+                    ) {
+                        score += SNAP_JUMP_PENALTY_METERS
+                    }
+                }
+
                 val candidate = SnappedRoadCandidate(
                     road = road,
                     points = points,
                     distanceToRoadMeters = projection.distanceToRoadMeters,
-                    distanceAlongRoadMeters = projection.distanceAlongRoadMeters
+                    distanceAlongRoadMeters = projection.distanceAlongRoadMeters,
+                    snappedLatitude = projection.snappedLatitude,
+                    snappedLongitude = projection.snappedLongitude,
+                    score = score
                 )
 
-                if (bestCandidate == null || candidate.distanceToRoadMeters < bestCandidate!!.distanceToRoadMeters) {
+                if (bestCandidate == null || candidate.score < bestCandidate!!.score) {
                     bestCandidate = candidate
                 }
             }
         }
 
         val candidate = bestCandidate ?: return 0
+        sessionMatchStates[sessionId] = MatchState(
+            roadOsmId = candidate.road.osmId,
+            rawLatitude = lat,
+            rawLongitude = lon,
+            snappedLatitude = candidate.snappedLatitude,
+            snappedLongitude = candidate.snappedLongitude,
+            timestamp = now
+        )
         val chunks = buildCoverageChunks(
             cityOsmId = city.osmId,
             road = candidate.road,
@@ -350,6 +408,128 @@ class OsmRepository @Inject constructor(
         }
         
         return inserted
+    }
+
+    private fun assignStatisticalRoads(
+        segments: List<RoadSegment>,
+        points: List<RoadPoint>
+    ): List<RoadSegment> {
+        val pointsByRoadId = points
+            .groupBy { it.roadOsmId }
+            .mapValues { (_, roadPoints) -> roadPoints.sortedBy { it.orderIndex } }
+        val excludedRoadIds = mutableSetOf<Long>()
+        val representatives = segments.associate { it.osmId to it.osmId }.toMutableMap()
+        val eligibleSegments = segments
+            .filter { isRoadEligibleForStats(it.roadType) && !normalizeRoadName(it.name).isNullOrBlank() }
+            .sortedByDescending { it.lengthMeters }
+
+        for ((index, baseRoad) in eligibleSegments.withIndex()) {
+            if (baseRoad.osmId in excludedRoadIds) continue
+            val basePoints = pointsByRoadId[baseRoad.osmId].orEmpty()
+            if (basePoints.size < 2) continue
+
+            for (candidateRoad in eligibleSegments.drop(index + 1)) {
+                if (candidateRoad.osmId in excludedRoadIds) continue
+                val candidatePoints = pointsByRoadId[candidateRoad.osmId].orEmpty()
+                if (candidatePoints.size < 2) continue
+
+                if (areLikelyParallelDuplicates(baseRoad, basePoints, candidateRoad, candidatePoints)) {
+                    representatives[candidateRoad.osmId] = baseRoad.osmId
+                    excludedRoadIds += candidateRoad.osmId
+                }
+            }
+        }
+
+        return segments.map { road ->
+            val excluded = !isRoadEligibleForStats(road.roadType) || road.osmId in excludedRoadIds
+            road.copy(
+                statsRoadOsmId = representatives[road.osmId] ?: road.osmId,
+                isStatsExcluded = excluded
+            )
+        }
+    }
+
+    private fun isRoadEligibleForStats(roadType: String): Boolean {
+        return roadType in setOf(
+            "primary",
+            "secondary",
+            "tertiary",
+            "residential",
+            "living_street",
+            "unclassified",
+            "pedestrian"
+        )
+    }
+
+    private fun areLikelyParallelDuplicates(
+        first: RoadSegment,
+        firstPoints: List<RoadPoint>,
+        second: RoadSegment,
+        secondPoints: List<RoadPoint>
+    ): Boolean {
+        val firstName = normalizeRoadName(first.name) ?: return false
+        val secondName = normalizeRoadName(second.name) ?: return false
+        if (firstName != secondName) return false
+        if (first.roadType != second.roadType) return false
+
+        val lengthRatio = min(first.lengthMeters, second.lengthMeters) /
+            max(first.lengthMeters, second.lengthMeters)
+        if (lengthRatio < MIN_PARALLEL_LENGTH_RATIO) return false
+
+        val midpointDistanceMeters = haversineDistance(
+            firstPoints[firstPoints.lastIndex / 2].latitude,
+            firstPoints[firstPoints.lastIndex / 2].longitude,
+            secondPoints[secondPoints.lastIndex / 2].latitude,
+            secondPoints[secondPoints.lastIndex / 2].longitude
+        ) * 1000.0
+        if (
+            midpointDistanceMeters < MIN_PARALLEL_ROAD_DISTANCE_METERS ||
+            midpointDistanceMeters > MAX_PARALLEL_ROAD_DISTANCE_METERS
+        ) {
+            return false
+        }
+
+        val firstBearing = polylineBearingDegrees(firstPoints)
+        val secondBearing = polylineBearingDegrees(secondPoints)
+        if (orientationDifferenceDegrees(firstBearing, secondBearing) > MAX_PARALLEL_ORIENTATION_DIFF_DEGREES) {
+            return false
+        }
+
+        return boundingBoxOverlapRatio(first, second) >= 0.45
+    }
+
+    private fun normalizeRoadName(name: String?): String? {
+        return name
+            ?.trim()
+            ?.lowercase()
+            ?.replace("ё", "е")
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun polylineBearingDegrees(points: List<RoadPoint>): Double {
+        val start = points.first()
+        val end = points.last()
+        val lat1 = Math.toRadians(start.latitude)
+        val lat2 = Math.toRadians(end.latitude)
+        val dLon = Math.toRadians(end.longitude - start.longitude)
+
+        val y = sin(dLon) * cos(lat2)
+        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    }
+
+    private fun orientationDifferenceDegrees(first: Double, second: Double): Double {
+        val directDifference = abs(first - second) % 360.0
+        val wrappedDifference = min(directDifference, 360.0 - directDifference)
+        return min(wrappedDifference, abs(180.0 - wrappedDifference))
+    }
+
+    private fun boundingBoxOverlapRatio(first: RoadSegment, second: RoadSegment): Double {
+        val latOverlap = max(0.0, min(first.maxLat, second.maxLat) - max(first.minLat, second.minLat))
+        val lonOverlap = max(0.0, min(first.maxLon, second.maxLon) - max(first.minLon, second.minLon))
+        val minLatSpan = min(first.maxLat - first.minLat, second.maxLat - second.minLat).coerceAtLeast(1e-6)
+        val minLonSpan = min(first.maxLon - first.minLon, second.maxLon - second.minLon).coerceAtLeast(1e-6)
+        return max(latOverlap / minLatSpan, lonOverlap / minLonSpan)
     }
 
     private fun buildCoverageChunks(
@@ -452,6 +632,8 @@ class OsmRepository @Inject constructor(
     ): PolylineProjection {
         var minDistanceMeters = Double.MAX_VALUE
         var bestDistanceAlongRoadMeters = 0.0
+        var snappedLatitude = points.first().latitude
+        var snappedLongitude = points.first().longitude
         var traversedMeters = 0.0
 
         for (i in 0 until points.lastIndex) {
@@ -477,6 +659,8 @@ class OsmRepository @Inject constructor(
             if (projection.distanceMeters < minDistanceMeters) {
                 minDistanceMeters = projection.distanceMeters
                 bestDistanceAlongRoadMeters = traversedMeters + segmentLengthMeters * projection.segmentFraction
+                snappedLatitude = projection.snappedLatitude
+                snappedLongitude = projection.snappedLongitude
             }
 
             traversedMeters += segmentLengthMeters
@@ -484,7 +668,9 @@ class OsmRepository @Inject constructor(
 
         return PolylineProjection(
             distanceToRoadMeters = minDistanceMeters,
-            distanceAlongRoadMeters = bestDistanceAlongRoadMeters
+            distanceAlongRoadMeters = bestDistanceAlongRoadMeters,
+            snappedLatitude = snappedLatitude,
+            snappedLongitude = snappedLongitude
         )
     }
 
@@ -514,7 +700,9 @@ class OsmRepository @Inject constructor(
         if (abLengthSquared == 0.0) {
             return SegmentProjection(
                 distanceMeters = sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay)),
-                segmentFraction = 0.0
+                segmentFraction = 0.0,
+                snappedLatitude = startLat,
+                snappedLongitude = startLon
             )
         }
 
@@ -527,7 +715,9 @@ class OsmRepository @Inject constructor(
 
         return SegmentProjection(
             distanceMeters = sqrt((px - closestX) * (px - closestX) + (py - closestY) * (py - closestY)),
-            segmentFraction = clampedT
+            segmentFraction = clampedT,
+            snappedLatitude = startLat + (endLat - startLat) * clampedT,
+            snappedLongitude = startLon + (endLon - startLon) * clampedT
         )
     }
 
@@ -554,17 +744,33 @@ class OsmRepository @Inject constructor(
         val road: RoadSegment,
         val points: List<RoadPoint>,
         val distanceToRoadMeters: Double,
-        val distanceAlongRoadMeters: Double
+        val distanceAlongRoadMeters: Double,
+        val snappedLatitude: Double,
+        val snappedLongitude: Double,
+        val score: Double
     )
 
     private data class PolylineProjection(
         val distanceToRoadMeters: Double,
-        val distanceAlongRoadMeters: Double
+        val distanceAlongRoadMeters: Double,
+        val snappedLatitude: Double,
+        val snappedLongitude: Double
     )
 
     private data class SegmentProjection(
         val distanceMeters: Double,
-        val segmentFraction: Double
+        val segmentFraction: Double,
+        val snappedLatitude: Double,
+        val snappedLongitude: Double
+    )
+
+    private data class MatchState(
+        val roadOsmId: Long,
+        val rawLatitude: Double,
+        val rawLongitude: Double,
+        val snappedLatitude: Double,
+        val snappedLongitude: Double,
+        val timestamp: Long
     )
 
     private data class ChunkGeometry(
