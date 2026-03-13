@@ -74,7 +74,7 @@ object OverpassQueryBuilder {
     /**
      * Build query for city boundary polygon
      */
-    fun buildCityBoundaryQuery(cityName: String, osmId: Long): String {
+    fun buildCityBoundaryQuery(osmId: Long): String {
         return """
             [out:json][timeout:60];
             relation(${osmId});

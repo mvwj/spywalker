@@ -33,6 +33,7 @@ class OsmRepository @Inject constructor(
         private const val SAME_ROAD_BONUS_METERS = 10.0
         private const val SNAP_JUMP_PENALTY_METERS = 16.0
         private const val MAX_REASONABLE_SNAP_SPEED_MPS = 4.5
+        private const val POINTS_INSERT_BATCH_SIZE = 4_000
     }
 
     private val sessionMatchStates = mutableMapOf<Long, MatchState>()
@@ -93,8 +94,8 @@ class OsmRepository @Inject constructor(
                 
                 onProgress(0.35f, "Обработка дорожной сети...")
                 
-                // Parse road segments
-                val (segments, points) = parseRoadSegments(
+                // Parse road segments without duplicating all geometry points in memory.
+                val parsedRoads = parseRoadSegments(
                     overpassResponse.elements,
                     searchResult.osmId,
                     onProgress = { processedWays, totalWays ->
@@ -109,7 +110,8 @@ class OsmRepository @Inject constructor(
                         )
                     }
                 )
-                val normalizedSegments = assignStatisticalRoads(segments, points)
+                val normalizedRoads = assignStatisticalRoads(parsedRoads)
+                val normalizedSegments = normalizedRoads.map { it.segment }
                 
                 onProgress(0.85f, "Сохранение ${normalizedSegments.count { !it.isStatsExcluded }} дорог...")
                 
@@ -141,7 +143,7 @@ class OsmRepository @Inject constructor(
                 onProgress(0.94f, "Сохранение сегментов дорог...")
                 cityDao.insertRoadSegments(normalizedSegments)
                 onProgress(0.98f, "Сохранение геометрии дорог...")
-                cityDao.insertRoadPoints(points)
+                insertRoadPointsInBatches(normalizedRoads)
                 
                 onProgress(1.0f, "Готово! Загружено ${normalizedSegments.count { !it.isStatsExcluded }} дорог")
                 
@@ -182,9 +184,8 @@ class OsmRepository @Inject constructor(
         elements: List<OverpassElement>,
         cityOsmId: Long,
         onProgress: (processedWays: Int, totalWays: Int) -> Unit = { _, _ -> }
-    ): Pair<List<RoadSegment>, List<RoadPoint>> {
-        val segments = mutableListOf<RoadSegment>()
-        val allPoints = mutableListOf<RoadPoint>()
+    ): List<ParsedRoadImport> {
+        val roads = mutableListOf<ParsedRoadImport>()
         
         // Filter only ways with geometry
         val ways = elements.filter { it.type == "way" && it.geometry != null }
@@ -213,15 +214,21 @@ class OsmRepository @Inject constructor(
             val roadType = way.tags?.get("highway") ?: "unknown"
             val name = way.tags?.get("name")
             
-            // Calculate bounding box
-            val lats = geometry.map { it.lat }
-            val lons = geometry.map { it.lon }
-            
-            // Calculate road length
+            var minLat = Double.POSITIVE_INFINITY
+            var maxLat = Double.NEGATIVE_INFINITY
+            var minLon = Double.POSITIVE_INFINITY
+            var maxLon = Double.NEGATIVE_INFINITY
             var length = 0.0
-            for (i in 0 until geometry.size - 1) {
+            for (i in geometry.indices) {
+                val point = geometry[i]
+                if (point.lat < minLat) minLat = point.lat
+                if (point.lat > maxLat) maxLat = point.lat
+                if (point.lon < minLon) minLon = point.lon
+                if (point.lon > maxLon) maxLon = point.lon
+
+                if (i == geometry.lastIndex) continue
                 length += haversineDistance(
-                    geometry[i].lat, geometry[i].lon,
+                    point.lat, point.lon,
                     geometry[i + 1].lat, geometry[i + 1].lon
                 )
             }
@@ -231,30 +238,44 @@ class OsmRepository @Inject constructor(
                 cityOsmId = cityOsmId,
                 name = name,
                 roadType = roadType,
-                minLat = lats.minOrNull() ?: 0.0,
-                maxLat = lats.maxOrNull() ?: 0.0,
-                minLon = lons.minOrNull() ?: 0.0,
-                maxLon = lons.maxOrNull() ?: 0.0,
+                minLat = minLat,
+                maxLat = maxLat,
+                minLon = minLon,
+                maxLon = maxLon,
                 lengthMeters = length * 1000, // km to meters
                 statsRoadOsmId = way.id
             )
-            segments.add(segment)
-            
-            // Create road points
-            geometry.forEachIndexed { index, point ->
-                allPoints.add(
+            roads.add(ParsedRoadImport(segment = segment, geometry = geometry))
+            onProgress(index + 1, totalWays)
+        }
+        
+        return roads
+    }
+
+    private suspend fun insertRoadPointsInBatches(roads: List<ParsedRoadImport>) {
+        val batch = ArrayList<RoadPoint>(POINTS_INSERT_BATCH_SIZE)
+
+        for (road in roads) {
+            road.geometry.forEachIndexed { index, point ->
+                batch.add(
                     RoadPoint(
-                        roadOsmId = way.id,
+                        roadOsmId = road.segment.osmId,
                         orderIndex = index,
                         latitude = point.lat,
                         longitude = point.lon
                     )
                 )
+
+                if (batch.size >= POINTS_INSERT_BATCH_SIZE) {
+                    cityDao.insertRoadPoints(batch.toList())
+                    batch.clear()
+                }
             }
-            onProgress(index + 1, totalWays)
         }
-        
-        return Pair(segments, allPoints)
+
+        if (batch.isNotEmpty()) {
+            cityDao.insertRoadPoints(batch.toList())
+        }
     }
     
     /**
@@ -377,7 +398,7 @@ class OsmRepository @Inject constructor(
                     score = score
                 )
 
-                if (bestCandidate == null || candidate.score < bestCandidate!!.score) {
+                if (bestCandidate?.score == null || candidate.score < bestCandidate.score) {
                     bestCandidate = candidate
                 }
             }
@@ -411,26 +432,24 @@ class OsmRepository @Inject constructor(
     }
 
     private fun assignStatisticalRoads(
-        segments: List<RoadSegment>,
-        points: List<RoadPoint>
-    ): List<RoadSegment> {
-        val pointsByRoadId = points
-            .groupBy { it.roadOsmId }
-            .mapValues { (_, roadPoints) -> roadPoints.sortedBy { it.orderIndex } }
+        roads: List<ParsedRoadImport>
+    ): List<ParsedRoadImport> {
+        val geometryByRoadId = roads.associate { it.segment.osmId to it.geometry }
         val excludedRoadIds = mutableSetOf<Long>()
-        val representatives = segments.associate { it.osmId to it.osmId }.toMutableMap()
-        val eligibleSegments = segments
+        val representatives = roads.associate { it.segment.osmId to it.segment.osmId }.toMutableMap()
+        val eligibleSegments = roads
+            .map { it.segment }
             .filter { isRoadEligibleForStats(it.roadType) && !normalizeRoadName(it.name).isNullOrBlank() }
             .sortedByDescending { it.lengthMeters }
 
         for ((index, baseRoad) in eligibleSegments.withIndex()) {
             if (baseRoad.osmId in excludedRoadIds) continue
-            val basePoints = pointsByRoadId[baseRoad.osmId].orEmpty()
+            val basePoints = geometryByRoadId[baseRoad.osmId].orEmpty()
             if (basePoints.size < 2) continue
 
             for (candidateRoad in eligibleSegments.drop(index + 1)) {
                 if (candidateRoad.osmId in excludedRoadIds) continue
-                val candidatePoints = pointsByRoadId[candidateRoad.osmId].orEmpty()
+                val candidatePoints = geometryByRoadId[candidateRoad.osmId].orEmpty()
                 if (candidatePoints.size < 2) continue
 
                 if (areLikelyParallelDuplicates(baseRoad, basePoints, candidateRoad, candidatePoints)) {
@@ -440,11 +459,14 @@ class OsmRepository @Inject constructor(
             }
         }
 
-        return segments.map { road ->
-            val excluded = !isRoadEligibleForStats(road.roadType) || road.osmId in excludedRoadIds
+        return roads.map { road ->
+            val segment = road.segment
+            val excluded = !isRoadEligibleForStats(segment.roadType) || segment.osmId in excludedRoadIds
             road.copy(
-                statsRoadOsmId = representatives[road.osmId] ?: road.osmId,
-                isStatsExcluded = excluded
+                segment = segment.copy(
+                    statsRoadOsmId = representatives[segment.osmId] ?: segment.osmId,
+                    isStatsExcluded = excluded
+                )
             )
         }
     }
@@ -463,9 +485,9 @@ class OsmRepository @Inject constructor(
 
     private fun areLikelyParallelDuplicates(
         first: RoadSegment,
-        firstPoints: List<RoadPoint>,
+        firstPoints: List<OverpassLatLon>,
         second: RoadSegment,
-        secondPoints: List<RoadPoint>
+        secondPoints: List<OverpassLatLon>
     ): Boolean {
         val firstName = normalizeRoadName(first.name) ?: return false
         val secondName = normalizeRoadName(second.name) ?: return false
@@ -477,10 +499,10 @@ class OsmRepository @Inject constructor(
         if (lengthRatio < MIN_PARALLEL_LENGTH_RATIO) return false
 
         val midpointDistanceMeters = haversineDistance(
-            firstPoints[firstPoints.lastIndex / 2].latitude,
-            firstPoints[firstPoints.lastIndex / 2].longitude,
-            secondPoints[secondPoints.lastIndex / 2].latitude,
-            secondPoints[secondPoints.lastIndex / 2].longitude
+            firstPoints[firstPoints.lastIndex / 2].lat,
+            firstPoints[firstPoints.lastIndex / 2].lon,
+            secondPoints[secondPoints.lastIndex / 2].lat,
+            secondPoints[secondPoints.lastIndex / 2].lon
         ) * 1000.0
         if (
             midpointDistanceMeters < MIN_PARALLEL_ROAD_DISTANCE_METERS ||
@@ -506,12 +528,12 @@ class OsmRepository @Inject constructor(
             ?.takeIf { it.isNotBlank() }
     }
 
-    private fun polylineBearingDegrees(points: List<RoadPoint>): Double {
+    private fun polylineBearingDegrees(points: List<OverpassLatLon>): Double {
         val start = points.first()
         val end = points.last()
-        val lat1 = Math.toRadians(start.latitude)
-        val lat2 = Math.toRadians(end.latitude)
-        val dLon = Math.toRadians(end.longitude - start.longitude)
+        val lat1 = Math.toRadians(start.lat)
+        val lat2 = Math.toRadians(end.lat)
+        val dLon = Math.toRadians(end.lon - start.lon)
 
         val y = sin(dLon) * cos(lat2)
         val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
@@ -782,6 +804,11 @@ class OsmRepository @Inject constructor(
         val endLatitude: Double,
         val endLongitude: Double,
         val lengthMeters: Double
+    )
+
+    private data class ParsedRoadImport(
+        val segment: RoadSegment,
+        val geometry: List<OverpassLatLon>
     )
 }
 
