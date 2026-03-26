@@ -148,6 +148,7 @@ fun SpyWalkerApp(
                     onStopTracking = mapViewModel::stopTracking,
                     onMapZoomChange = mapViewModel::updateMapZoom,
                     onCitySelectionClick = mapViewModel::showCitySelection,
+                    onToggleCoverageStats = mapViewModel::toggleCoverageStats,
                     onFocusCurrentLocation = mapViewModel::requestFocusOnCurrentLocation,
                     onShowWalks = mapViewModel::showWalkSessions,
                     onHideWalks = mapViewModel::hideWalkSessions,

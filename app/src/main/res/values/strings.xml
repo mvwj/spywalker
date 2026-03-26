@@ -58,6 +58,8 @@
     <string name="current_city_not_downloaded_message">Похоже, вы сейчас в %1$s. Карта этого города ещё не скачана.</string>
     <string name="download_current_city_action">Скачать карту %1$s</string>
     <string name="later_action">Позже</string>
+    <string name="collapse_city_stats_action">Свернуть виджет города и статистики</string>
+    <string name="expand_city_stats_action">Развернуть виджет города и статистики</string>
 
     <string name="notification_channel_name">SpyWalker</string>
     <string name="notification_channel_description">Отслеживание маршрута в фоне</string>

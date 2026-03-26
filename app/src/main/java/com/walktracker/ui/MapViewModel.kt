@@ -49,6 +49,7 @@ data class MapUiState(
     val exploredRoadLengthKm: Double = 0.0,
     val coveragePercentage: Float = 0f,
     val suggestedCityDownload: SuggestedCityDownload? = null,
+    val isCoverageStatsExpanded: Boolean = true,
     
     // City selection
     val showCitySelection: Boolean = false,
@@ -504,6 +505,10 @@ class MapViewModel @Inject constructor(
 
     fun showWalkSessions() {
         _uiState.update { it.copy(showWalkSessions = true) }
+    }
+
+    fun toggleCoverageStats() {
+        _uiState.update { it.copy(isCoverageStatsExpanded = !it.isCoverageStatsExpanded) }
     }
 
     fun hideWalkSessions() {

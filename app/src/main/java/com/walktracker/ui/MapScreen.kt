@@ -7,10 +7,13 @@ import android.graphics.Paint
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.LocationCity
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Remove
@@ -38,6 +43,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -80,6 +87,7 @@ fun MapScreen(
     onStopTracking: () -> Unit,
     onMapZoomChange: (Double) -> Unit,
     onCitySelectionClick: () -> Unit,
+    onToggleCoverageStats: () -> Unit,
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     onHideWalks: () -> Unit,
@@ -119,7 +127,9 @@ fun MapScreen(
                 totalDistanceKm = uiState.totalDistanceKm,
                 isTracking = uiState.isTracking,
                 currentPoints = uiState.currentPointsCount,
+                isExpanded = uiState.isCoverageStatsExpanded,
                 onCityClick = onCitySelectionClick,
+                onToggleExpanded = onToggleCoverageStats,
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -486,32 +496,18 @@ private fun VerticalZoomControl(
                 shape = RoundedCornerShape(14.dp),
                 color = DarkSurfaceVariant.copy(alpha = 0.85f)
             ) {
-                BoxWithConstraints(
+                Box(
                     modifier = Modifier
                         .height(230.dp)
                         .width(56.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Slider(
+                    FullHeightVerticalZoomSlider(
                         value = sliderValue,
                         onValueChange = { onZoomChange(it.toDouble()) },
                         valueRange = MIN_ZOOM_LEVEL..MAX_ZOOM_LEVEL,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Primary,
-                            activeTrackColor = Primary,
-                            inactiveTrackColor = ComposeColor.White.copy(alpha = 0.18f)
-                        ),
                         modifier = Modifier
-                            .width(maxHeight)
-                            .graphicsLayer { rotationZ = -90f }
-                    )
-
-                    Text(
-                        text = zoomLevel.roundToInt().toString(),
-                        color = TextOnDark,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
+                            .fillMaxSize()
                     )
                 }
             }
@@ -525,6 +521,124 @@ private fun VerticalZoomControl(
                     tint = TextOnDark
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun FullHeightVerticalZoomSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier
+) {
+    var sliderHeightPx by remember { mutableStateOf(0) }
+    val clampedValue = value.coerceIn(valueRange.start, valueRange.endInclusive)
+    val normalizedValue = ((clampedValue - valueRange.start) /
+        (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+
+    Box(
+        modifier = modifier
+            .onSizeChanged { sliderHeightPx = it.height }
+            .pointerInput(valueRange, sliderHeightPx) {
+                if (sliderHeightPx == 0) return@pointerInput
+
+                detectTapGestures { offset ->
+                    onValueChange(
+                        offsetToZoomValue(
+                            y = offset.y,
+                            heightPx = sliderHeightPx.toFloat(),
+                            valueRange = valueRange
+                        )
+                    )
+                }
+            }
+            .pointerInput(valueRange, sliderHeightPx) {
+                if (sliderHeightPx == 0) return@pointerInput
+
+                detectVerticalDragGestures(
+                    onDragStart = { offset ->
+                        onValueChange(
+                            offsetToZoomValue(
+                                y = offset.y,
+                                heightPx = sliderHeightPx.toFloat(),
+                                valueRange = valueRange
+                            )
+                        )
+                    },
+                    onVerticalDrag = { change, _ ->
+                        change.consume()
+                        onValueChange(
+                            offsetToZoomValue(
+                                y = change.position.y,
+                                heightPx = sliderHeightPx.toFloat(),
+                                valueRange = valueRange
+                            )
+                        )
+                    }
+                )
+            }
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 12.dp)
+        ) {
+            val trackWidth = 6.dp.toPx()
+            val thumbRadius = 10.dp.toPx()
+            val centerX = size.width / 2f
+            val trackTop = thumbRadius
+            val trackBottom = size.height - thumbRadius
+            val trackHeight = (trackBottom - trackTop).coerceAtLeast(1f)
+            val thumbCenterY = trackBottom - (normalizedValue * trackHeight)
+
+            drawLine(
+                color = ComposeColor.White.copy(alpha = 0.18f),
+                start = Offset(centerX, trackTop),
+                end = Offset(centerX, trackBottom),
+                strokeWidth = trackWidth,
+                cap = StrokeCap.Round
+            )
+
+            drawLine(
+                color = Primary,
+                start = Offset(centerX, thumbCenterY),
+                end = Offset(centerX, trackBottom),
+                strokeWidth = trackWidth,
+                cap = StrokeCap.Round
+            )
+
+            drawCircle(
+                color = Primary.copy(alpha = 0.22f),
+                radius = thumbRadius * 1.65f,
+                center = Offset(centerX, thumbCenterY)
+            )
+            drawCircle(
+                color = Primary,
+                radius = thumbRadius,
+                center = Offset(centerX, thumbCenterY)
+            )
+            drawCircle(
+                color = ComposeColor.White,
+                radius = thumbRadius * 0.38f,
+                center = Offset(centerX, thumbCenterY)
+            )
+        }
+
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 8.dp),
+            shape = RoundedCornerShape(10.dp),
+            color = DarkCard.copy(alpha = 0.92f)
+        ) {
+            Text(
+                text = clampedValue.roundToInt().toString(),
+                color = TextOnDark,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
         }
     }
 }
@@ -704,7 +818,9 @@ fun CoverageStatsCard(
     totalDistanceKm: Double,
     isTracking: Boolean,
     currentPoints: Int,
+    isExpanded: Boolean,
     onCityClick: () -> Unit,
+    onToggleExpanded: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -721,6 +837,7 @@ fun CoverageStatsCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
+            .animateContentSize()
             .shadow(
                 elevation = 24.dp,
                 shape = RoundedCornerShape(24.dp),
@@ -733,57 +850,81 @@ fun CoverageStatsCard(
         )
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            // City selection row
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onCityClick() }
-                    .background(DarkSurfaceVariant.copy(alpha = 0.5f))
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.LocationCity,
-                    contentDescription = stringResource(R.string.city_label),
-                    tint = Primary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = selectedCity?.name ?: stringResource(R.string.choose_city),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextOnDark,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onCityClick() }
+                        .background(DarkSurfaceVariant.copy(alpha = 0.5f))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LocationCity,
+                        contentDescription = stringResource(R.string.city_label),
+                        tint = Primary,
+                        modifier = Modifier.size(24.dp)
                     )
-                    if (selectedCity != null) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = stringResource(R.string.roads_and_length, totalRoadsCount, totalRoadLengthKm),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextOnDarkSecondary
+                            text = selectedCity?.name ?: stringResource(R.string.choose_city),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextOnDark,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                    } else {
-                        Text(
-                            text = stringResource(R.string.tap_to_download_roads),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextOnDarkSecondary
-                        )
+                        if (selectedCity != null) {
+                            Text(
+                                text = stringResource(R.string.roads_and_length, totalRoadsCount, totalRoadLengthKm),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextOnDarkSecondary
+                            )
+                        } else {
+                            Text(
+                                text = stringResource(R.string.tap_to_download_roads),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextOnDarkSecondary
+                            )
+                        }
                     }
+                    Icon(
+                        painter = painterResource(R.drawable.ic_explore),
+                        contentDescription = null,
+                        tint = TextOnDarkSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
-                Icon(
-                    painter = painterResource(R.drawable.ic_explore),
-                    contentDescription = null,
-                    tint = TextOnDarkSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
+
+                FilledIconButton(
+                    onClick = onToggleExpanded,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = DarkSurfaceVariant.copy(alpha = 0.75f),
+                        contentColor = TextOnDark
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = stringResource(
+                            if (isExpanded) {
+                                R.string.collapse_city_stats_action
+                            } else {
+                                R.string.expand_city_stats_action
+                            }
+                        )
+                    )
+                }
             }
-            
-            if (selectedCity != null) {
+
+            if (selectedCity != null && isExpanded) {
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 // Coverage info
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -795,9 +936,9 @@ fun CoverageStatsCard(
                         percentage = coveragePercentage,
                         modifier = Modifier.size(80.dp)
                     )
-                    
+
                     Spacer(modifier = Modifier.width(16.dp))
-                    
+
                     // Stats
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -824,7 +965,7 @@ fun CoverageStatsCard(
                             color = TextOnDarkSecondary
                         )
                     }
-                    
+
                     // Recording indicator
                     if (isTracking) {
                         Box(
@@ -843,9 +984,9 @@ fun CoverageStatsCard(
                         }
                     }
                 }
-                
+
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 // Divider
                 Box(
                     modifier = Modifier
@@ -861,9 +1002,9 @@ fun CoverageStatsCard(
                             )
                         )
                 )
-                
+
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 // Bottom stats row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -891,6 +1032,17 @@ fun CoverageStatsCard(
             }
         }
     }
+}
+
+private fun offsetToZoomValue(
+    y: Float,
+    heightPx: Float,
+    valueRange: ClosedFloatingPointRange<Float>
+): Float {
+    val coercedY = y.coerceIn(0f, heightPx)
+    val fraction = 1f - (coercedY / heightPx.coerceAtLeast(1f))
+    return (valueRange.start + fraction * (valueRange.endInclusive - valueRange.start))
+        .coerceIn(valueRange.start, valueRange.endInclusive)
 }
 
 @Composable
