@@ -1,14 +1,22 @@
 ﻿package com.spywalker.repository
 
+import android.util.Log
 import com.spywalker.data.*
 import com.spywalker.data.osm.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import retrofit2.HttpException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.*
+
+data class SuggestedCityDownload(
+    val cityName: String,
+    val searchResult: NominatimSearchResult
+)
 
 /**
  * Repository for OpenStreetMap data - city search and road network
@@ -20,11 +28,15 @@ class OsmRepository @Inject constructor(
     private val cityDao: CityDao
 ) {
     companion object {
+        private const val TAG = "OsmRepository"
         private const val EARTH_RADIUS_METERS = 6_371_000.0
+        private const val CITY_BOUNDARY_TOLERANCE_DEGREES = 0.0035
+        private const val MAX_CITY_FALLBACK_DISTANCE_METERS = 2_500.0
         private const val MAX_USABLE_SNAP_ACCURACY_METERS = 35f
         private const val MAX_ROAD_MATCH_DISTANCE_METERS = 35.0
         private const val ROAD_CHUNK_SIZE_METERS = 20.0
-        private const val COVERAGE_RADIUS_METERS = 18.0
+        private const val MAX_COVERAGE_RADIUS_METERS = 18.0
+        private const val MIN_COVERAGE_RADIUS_METERS = 8.0
         private const val MAX_PARALLEL_ROAD_DISTANCE_METERS = 32.0
         private const val MIN_PARALLEL_ROAD_DISTANCE_METERS = 4.0
         private const val MIN_PARALLEL_LENGTH_RATIO = 0.55
@@ -33,7 +45,23 @@ class OsmRepository @Inject constructor(
         private const val SAME_ROAD_BONUS_METERS = 10.0
         private const val SNAP_JUMP_PENALTY_METERS = 16.0
         private const val MAX_REASONABLE_SNAP_SPEED_MPS = 4.5
+        private const val AMBIGUOUS_MATCH_PENALTY_METERS = 7.0
+        private const val REQUIRED_MATCH_ADVANTAGE_METERS = 4.5
+        private const val REQUIRED_MATCH_ADVANTAGE_WEAK_METERS = 8.0
+        private const val SAME_ROAD_CONFIRMATION_DISTANCE_METERS = 22.0
+        private const val WEAK_SIGNAL_SNAP_ACCURACY_METERS = 22f
         private const val POINTS_INSERT_BATCH_SIZE = 4_000
+        private const val MAX_TILE_EDGE_KM = 10.0
+        private const val MAX_TILE_GRID_DIMENSION = 4
+        private const val MAX_RETRY_ATTEMPTS_PER_ENDPOINT = 2
+
+        private val OVERPASS_ENDPOINTS = listOf(
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.private.coffee/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+        )
+
+        private val RETRYABLE_HTTP_CODES = setOf(429, 502, 503, 504)
     }
 
     private val sessionMatchStates = mutableMapOf<Long, MatchState>()
@@ -48,6 +76,8 @@ class OsmRepository @Inject constructor(
             try {
                 val results = nominatimApi.searchCity(query)
                 Result.success(results)
+            } catch (e: IOException) {
+                Result.failure(Exception(networkUnavailableMessage("поиска городов"), e))
             } catch (e: HttpException) {
                 Result.failure(Exception(formatHttpError("Nominatim", e), e))
             } catch (e: Exception) {
@@ -80,13 +110,29 @@ class OsmRepository @Inject constructor(
                 val east = boundingBox[3].toDouble()
                 
                 onProgress(0.15f, "Загрузка дорог из OpenStreetMap...")
-                
-                // Build Overpass query
-                val query = OverpassQueryBuilder.buildRoadsQuery(south, west, north, east)
-                
-                // Fetch roads from Overpass
-                val overpassResponse = overpassApi.queryRoads(query)
-                if (overpassResponse.elements.isEmpty()) {
+
+                val tiles = buildOverpassTiles(south, west, north, east)
+                val collectedElements = mutableListOf<OverpassElement>()
+
+                tiles.forEachIndexed { index, tile ->
+                    val query = OverpassQueryBuilder.buildRoadsQuery(
+                        south = tile.south,
+                        west = tile.west,
+                        north = tile.north,
+                        east = tile.east
+                    )
+                    val tileLabel = if (tiles.size > 1) " (${index + 1}/${tiles.size})" else ""
+                    onProgress(
+                        0.15f + (index.toFloat() / tiles.size.toFloat()) * 0.20f,
+                        "Загрузка дорог из OpenStreetMap$tileLabel..."
+                    )
+
+                    val tileResponse = queryOverpassWithFallback(query)
+                    collectedElements += tileResponse.elements
+                }
+
+                val uniqueElements = collectedElements.distinctBy { it.type to it.id }
+                if (uniqueElements.isEmpty()) {
                     return@withContext Result.failure(
                         Exception("Overpass не вернул дороги для выбранной области")
                     )
@@ -96,7 +142,7 @@ class OsmRepository @Inject constructor(
                 
                 // Parse road segments without duplicating all geometry points in memory.
                 val parsedRoads = parseRoadSegments(
-                    overpassResponse.elements,
+                    uniqueElements,
                     searchResult.osmId,
                     onProgress = { processedWays, totalWays ->
                         val fraction = if (totalWays > 0) {
@@ -110,7 +156,20 @@ class OsmRepository @Inject constructor(
                         )
                     }
                 )
-                val normalizedRoads = assignStatisticalRoads(parsedRoads)
+                val normalizedRoads = assignStatisticalRoads(
+                    parsedRoads,
+                    onProgress = { processedGroups, totalGroups ->
+                        val fraction = if (totalGroups > 0) {
+                            processedGroups.toFloat() / totalGroups.toFloat()
+                        } else {
+                            1f
+                        }
+                        onProgress(
+                            0.80f + fraction * 0.05f,
+                            "Нормализация дорог: $processedGroups / $totalGroups"
+                        )
+                    }
+                )
                 val normalizedSegments = normalizedRoads.map { it.segment }
                 
                 onProgress(0.85f, "Сохранение ${normalizedSegments.count { !it.isStatsExcluded }} дорог...")
@@ -149,6 +208,8 @@ class OsmRepository @Inject constructor(
                 
                 Result.success(city)
                 
+            } catch (e: IOException) {
+                Result.failure(Exception(networkUnavailableMessage("загрузки дорог"), e))
             } catch (e: HttpException) {
                 Result.failure(Exception(formatHttpError("Overpass", e), e))
             } catch (e: Exception) {
@@ -158,21 +219,106 @@ class OsmRepository @Inject constructor(
     }
 
     private fun formatHttpError(service: String, exception: HttpException): String {
-        val errorBody = try {
-            exception.response()?.errorBody()?.string()?.take(500)
-        } catch (_: Exception) {
-            null
+        val statusCode = exception.code()
+        Log.w(TAG, "HTTP error from $service: $statusCode ${exception.message()}", exception)
+
+        return when (service) {
+            "Overpass" -> when (statusCode) {
+                429 -> "Сервис OpenStreetMap временно ограничил запросы. Попробуйте ещё раз чуть позже."
+                502, 503, 504 -> "Сервер OpenStreetMap сейчас перегружен или недоступен. Попробуйте ещё раз позже."
+                else -> "Не удалось загрузить дороги из OpenStreetMap (HTTP $statusCode). Попробуйте ещё раз позже."
+            }
+            "Nominatim" -> when (statusCode) {
+                429 -> "Сервис поиска городов временно ограничил запросы. Попробуйте чуть позже."
+                502, 503, 504 -> "Сервис поиска городов сейчас недоступен. Попробуйте ещё раз позже."
+                else -> "Не удалось выполнить поиск города (HTTP $statusCode)."
+            }
+            else -> "Ошибка $service (HTTP $statusCode)"
+        }
+    }
+
+    private fun networkUnavailableMessage(target: String): String {
+        return "Не удалось подключиться к сервису $target. Проверьте интернет и попробуйте снова."
+    }
+
+    private suspend fun queryOverpassWithFallback(query: String): OverpassResponse {
+        var lastError: Exception? = null
+
+        for (endpoint in OVERPASS_ENDPOINTS) {
+            repeat(MAX_RETRY_ATTEMPTS_PER_ENDPOINT) { attempt ->
+                try {
+                    return overpassApi.queryRoads(endpoint, query)
+                } catch (e: IOException) {
+                    lastError = Exception(networkUnavailableMessage("OpenStreetMap"), e)
+                    Log.w(
+                        TAG,
+                        "Network failure while requesting Overpass endpoint=$endpoint attempt=${attempt + 1}",
+                        e
+                    )
+                } catch (e: HttpException) {
+                    Log.w(
+                        TAG,
+                        "HTTP failure while requesting Overpass endpoint=$endpoint attempt=${attempt + 1} code=${e.code()}",
+                        e
+                    )
+
+                    if (e.code() !in RETRYABLE_HTTP_CODES) {
+                        throw Exception(formatHttpError("Overpass", e), e)
+                    }
+
+                    lastError = Exception(formatHttpError("Overpass", e), e)
+                }
+
+                if (attempt < MAX_RETRY_ATTEMPTS_PER_ENDPOINT - 1) {
+                    delay(750L * (attempt + 1))
+                }
+            }
         }
 
-        return buildString {
-            append("Ошибка ${service}: HTTP ${exception.code()}")
-            val message = exception.message().takeIf { it.isNotBlank() }
-            if (message != null) {
-                append(" (${message})")
-            }
-            if (!errorBody.isNullOrBlank()) {
-                append(". ")
-                append(errorBody)
+        throw lastError ?: Exception("Не удалось загрузить дороги из OpenStreetMap. Попробуйте ещё раз позже.")
+    }
+
+    private fun buildOverpassTiles(
+        south: Double,
+        west: Double,
+        north: Double,
+        east: Double
+    ): List<BoundingBox> {
+        val midLatRadians = Math.toRadians((south + north) / 2.0)
+        val latKm = abs(north - south) * 111.32
+        val lonKm = abs(east - west) * 111.32 * cos(midLatRadians).coerceAtLeast(0.2)
+
+        val rows = ceil(latKm / MAX_TILE_EDGE_KM)
+            .toInt()
+            .coerceIn(1, MAX_TILE_GRID_DIMENSION)
+        val columns = ceil(lonKm / MAX_TILE_EDGE_KM)
+            .toInt()
+            .coerceIn(1, MAX_TILE_GRID_DIMENSION)
+
+        if (rows == 1 && columns == 1) {
+            return listOf(BoundingBox(south = south, west = west, north = north, east = east))
+        }
+
+        val latStep = (north - south) / rows.toDouble()
+        val lonStep = (east - west) / columns.toDouble()
+
+        return buildList {
+            for (row in 0 until rows) {
+                val tileSouth = south + latStep * row
+                val tileNorth = if (row == rows - 1) north else tileSouth + latStep
+
+                for (column in 0 until columns) {
+                    val tileWest = west + lonStep * column
+                    val tileEast = if (column == columns - 1) east else tileWest + lonStep
+                    add(
+                        BoundingBox(
+                            south = tileSouth,
+                            west = tileWest,
+                            north = tileNorth,
+                            east = tileEast
+                        )
+                    )
+                }
             }
         }
     }
@@ -302,12 +448,85 @@ class OsmRepository @Inject constructor(
     // === City Management ===
     
     fun getAllCities(): Flow<List<City>> = cityDao.getAllCities()
+
+    suspend fun getAllCitiesSync(): List<City> = cityDao.getAllCitiesSync()
     
     fun getSelectedCity(): Flow<City?> = cityDao.getSelectedCity()
+
+    suspend fun getSelectedCitySync(): City? = cityDao.getSelectedCitySync()
     
     suspend fun selectCity(osmId: Long) = cityDao.setSelectedCity(osmId)
+
+    suspend fun clearSelectedCity() = cityDao.deselectAllCities()
     
     suspend fun deleteCity(osmId: Long) = cityDao.deleteCity(osmId)
+
+    suspend fun findDownloadedCityForLocation(lat: Double, lon: Double): City? {
+        return withContext(Dispatchers.IO) {
+            val cities = cityDao.getAllCitiesSync()
+            if (cities.isEmpty()) return@withContext null
+
+            val containingCity = cities
+                .filter { city -> cityContainsLocation(city, lat, lon) }
+                .minByOrNull { cityArea(city = it) }
+
+            if (containingCity != null) {
+                return@withContext containingCity
+            }
+
+            cities
+                .map { city -> city to distanceToCityBoundsMeters(city, lat, lon) }
+                .filter { (_, distanceMeters) -> distanceMeters <= MAX_CITY_FALLBACK_DISTANCE_METERS }
+                .minByOrNull { (_, distanceMeters) -> distanceMeters }
+                ?.first
+        }
+    }
+
+    suspend fun suggestCityDownloadForLocation(
+        lat: Double,
+        lon: Double
+    ): Result<SuggestedCityDownload?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val reverseResult = nominatimApi.reverseGeocode(lat, lon)
+                val cityName = reverseResult.address.extractBestCityName()
+                    ?: extractCityName(reverseResult.displayName)
+
+                if (cityName.isBlank()) {
+                    return@withContext Result.success(null)
+                }
+
+                val candidates = nominatimApi.searchCity(cityName)
+                    .distinctBy { it.osmType to it.osmId }
+
+                val bestCandidate = candidates
+                    .firstOrNull { result -> searchResultContainsLocation(result, lat, lon) }
+                    ?: candidates.minByOrNull { result ->
+                        haversineDistance(
+                            lat,
+                            lon,
+                            result.latitude.toDoubleOrNull() ?: lat,
+                            result.longitude.toDoubleOrNull() ?: lon
+                        ) * 1000.0
+                    }
+
+                Result.success(
+                    bestCandidate?.let { candidate ->
+                        SuggestedCityDownload(
+                            cityName = cityName,
+                            searchResult = candidate
+                        )
+                    }
+                )
+            } catch (e: IOException) {
+                Result.failure(Exception(networkUnavailableMessage("определения текущего города"), e))
+            } catch (e: HttpException) {
+                Result.failure(Exception(formatHttpError("Nominatim", e), e))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
     
     // === Road Coverage ===
     
@@ -350,13 +569,15 @@ class OsmRepository @Inject constructor(
         if (nearbyRoads.isEmpty()) return 0
         
         var bestCandidate: SnappedRoadCandidate? = null
+        var secondBestCandidate: SnappedRoadCandidate? = null
+        val allowedMatchDistance = dynamicAllowedMatchDistanceMeters(accuracy)
         
         for (road in nearbyRoads) {
             val points = cityDao.getRoadPoints(road.osmId)
             if (points.size < 2) continue
 
             val projection = projectPointToPolyline(lat, lon, points)
-            if (projection.distanceToRoadMeters <= MAX_ROAD_MATCH_DISTANCE_METERS) {
+            if (projection.distanceToRoadMeters <= allowedMatchDistance) {
                 var score = projection.distanceToRoadMeters
                 previousMatch?.let { previous ->
                     score += if (previous.roadOsmId == road.osmId) {
@@ -386,6 +607,15 @@ class OsmRepository @Inject constructor(
                     ) {
                         score += SNAP_JUMP_PENALTY_METERS
                     }
+
+                    if (
+                        previous.roadOsmId != road.osmId &&
+                        previous.distanceToRoadMeters <= SAME_ROAD_CONFIRMATION_DISTANCE_METERS &&
+                        projection.distanceToRoadMeters <= SAME_ROAD_CONFIRMATION_DISTANCE_METERS &&
+                        accuracy >= WEAK_SIGNAL_SNAP_ACCURACY_METERS
+                    ) {
+                        score += AMBIGUOUS_MATCH_PENALTY_METERS
+                    }
                 }
 
                 val candidate = SnappedRoadCandidate(
@@ -399,18 +629,32 @@ class OsmRepository @Inject constructor(
                 )
 
                 if (bestCandidate?.score == null || candidate.score < bestCandidate.score) {
+                    secondBestCandidate = bestCandidate
                     bestCandidate = candidate
+                } else if (secondBestCandidate?.score == null || candidate.score < secondBestCandidate.score) {
+                    secondBestCandidate = candidate
                 }
             }
         }
 
         val candidate = bestCandidate ?: return 0
+        val scoreAdvantage = (secondBestCandidate?.score ?: Double.MAX_VALUE) - candidate.score
+        val requiredAdvantage = if (accuracy >= WEAK_SIGNAL_SNAP_ACCURACY_METERS) {
+            REQUIRED_MATCH_ADVANTAGE_WEAK_METERS
+        } else {
+            REQUIRED_MATCH_ADVANTAGE_METERS
+        }
+        if (scoreAdvantage < requiredAdvantage && previousMatch?.roadOsmId != candidate.road.osmId) {
+            return 0
+        }
+
         sessionMatchStates[sessionId] = MatchState(
             roadOsmId = candidate.road.osmId,
             rawLatitude = lat,
             rawLongitude = lon,
             snappedLatitude = candidate.snappedLatitude,
             snappedLongitude = candidate.snappedLongitude,
+            distanceToRoadMeters = candidate.distanceToRoadMeters,
             timestamp = now
         )
         val chunks = buildCoverageChunks(
@@ -418,7 +662,8 @@ class OsmRepository @Inject constructor(
             road = candidate.road,
             points = candidate.points,
             sessionId = sessionId,
-            distanceAlongRoadMeters = candidate.distanceAlongRoadMeters
+            distanceAlongRoadMeters = candidate.distanceAlongRoadMeters,
+            accuracy = accuracy
         )
         if (chunks.isEmpty()) return 0
 
@@ -432,31 +677,55 @@ class OsmRepository @Inject constructor(
     }
 
     private fun assignStatisticalRoads(
-        roads: List<ParsedRoadImport>
+        roads: List<ParsedRoadImport>,
+        onProgress: (processedGroups: Int, totalGroups: Int) -> Unit = { _, _ -> }
     ): List<ParsedRoadImport> {
-        val geometryByRoadId = roads.associate { it.segment.osmId to it.geometry }
         val excludedRoadIds = mutableSetOf<Long>()
         val representatives = roads.associate { it.segment.osmId to it.segment.osmId }.toMutableMap()
-        val eligibleSegments = roads
-            .map { it.segment }
-            .filter { isRoadEligibleForStats(it.roadType) && !normalizeRoadName(it.name).isNullOrBlank() }
-            .sortedByDescending { it.lengthMeters }
 
-        for ((index, baseRoad) in eligibleSegments.withIndex()) {
-            if (baseRoad.osmId in excludedRoadIds) continue
-            val basePoints = geometryByRoadId[baseRoad.osmId].orEmpty()
-            if (basePoints.size < 2) continue
-
-            for (candidateRoad in eligibleSegments.drop(index + 1)) {
-                if (candidateRoad.osmId in excludedRoadIds) continue
-                val candidatePoints = geometryByRoadId[candidateRoad.osmId].orEmpty()
-                if (candidatePoints.size < 2) continue
-
-                if (areLikelyParallelDuplicates(baseRoad, basePoints, candidateRoad, candidatePoints)) {
-                    representatives[candidateRoad.osmId] = baseRoad.osmId
-                    excludedRoadIds += candidateRoad.osmId
+        val eligibleGroups = roads
+            .mapNotNull { road ->
+                val segment = road.segment
+                val normalizedName = normalizeRoadName(segment.name)
+                if (!isRoadEligibleForStats(segment.roadType) || normalizedName.isNullOrBlank()) {
+                    null
+                } else {
+                    GroupedRoadImport(
+                        road = road,
+                        normalizedName = normalizedName
+                    )
                 }
             }
+            .groupBy { RoadGroupingKey(it.road.segment.roadType, it.normalizedName) }
+            .values
+
+        val totalGroups = eligibleGroups.size
+        eligibleGroups.forEachIndexed { groupIndex, groupedRoads ->
+            val sortedGroup = groupedRoads
+                .sortedByDescending { it.road.segment.lengthMeters }
+
+            for (index in sortedGroup.indices) {
+                val baseRoadImport = sortedGroup[index].road
+                val baseRoad = baseRoadImport.segment
+                if (baseRoad.osmId in excludedRoadIds) continue
+                val basePoints = baseRoadImport.geometry
+                if (basePoints.size < 2) continue
+
+                for (candidateIndex in index + 1 until sortedGroup.size) {
+                    val candidateRoadImport = sortedGroup[candidateIndex].road
+                    val candidateRoad = candidateRoadImport.segment
+                    if (candidateRoad.osmId in excludedRoadIds) continue
+                    val candidatePoints = candidateRoadImport.geometry
+                    if (candidatePoints.size < 2) continue
+
+                    if (areLikelyParallelDuplicates(baseRoad, basePoints, candidateRoad, candidatePoints)) {
+                        representatives[candidateRoad.osmId] = baseRoad.osmId
+                        excludedRoadIds += candidateRoad.osmId
+                    }
+                }
+            }
+
+            onProgress(groupIndex + 1, totalGroups)
         }
 
         return roads.map { road ->
@@ -559,13 +828,15 @@ class OsmRepository @Inject constructor(
         road: RoadSegment,
         points: List<RoadPoint>,
         sessionId: Long,
-        distanceAlongRoadMeters: Double
+        distanceAlongRoadMeters: Double,
+        accuracy: Float
     ): List<RoadCoverageChunk> {
         val chunkGeometries = buildChunkGeometries(points)
         if (chunkGeometries.isEmpty()) return emptyList()
 
-        val fromMeters = (distanceAlongRoadMeters - COVERAGE_RADIUS_METERS).coerceAtLeast(0.0)
-        val toMeters = distanceAlongRoadMeters + COVERAGE_RADIUS_METERS
+        val coverageRadiusMeters = dynamicCoverageRadiusMeters(accuracy)
+        val fromMeters = (distanceAlongRoadMeters - coverageRadiusMeters).coerceAtLeast(0.0)
+        val toMeters = distanceAlongRoadMeters + coverageRadiusMeters
 
         return chunkGeometries
             .filter { geometry ->
@@ -762,6 +1033,70 @@ class OsmRepository @Inject constructor(
         return total
     }
 
+    private fun dynamicAllowedMatchDistanceMeters(accuracy: Float): Double {
+        if (accuracy <= 0f) return MAX_ROAD_MATCH_DISTANCE_METERS
+
+        return when {
+            accuracy <= 8f -> MAX_ROAD_MATCH_DISTANCE_METERS
+            accuracy <= 15f -> 28.0
+            accuracy <= 22f -> 22.0
+            else -> 18.0
+        }
+    }
+
+    private fun dynamicCoverageRadiusMeters(accuracy: Float): Double {
+        if (accuracy <= 0f) return MAX_COVERAGE_RADIUS_METERS
+
+        return when {
+            accuracy <= 8f -> MAX_COVERAGE_RADIUS_METERS
+            accuracy <= 15f -> 14.0
+            accuracy <= 22f -> 11.0
+            else -> MIN_COVERAGE_RADIUS_METERS
+        }
+    }
+
+    private fun cityContainsLocation(city: City, lat: Double, lon: Double): Boolean {
+        return lat in (city.boundsSouth - CITY_BOUNDARY_TOLERANCE_DEGREES)..(city.boundsNorth + CITY_BOUNDARY_TOLERANCE_DEGREES) &&
+            lon in (city.boundsWest - CITY_BOUNDARY_TOLERANCE_DEGREES)..(city.boundsEast + CITY_BOUNDARY_TOLERANCE_DEGREES)
+    }
+
+    private fun cityArea(city: City): Double {
+        return (city.boundsNorth - city.boundsSouth).absoluteValue *
+            (city.boundsEast - city.boundsWest).absoluteValue
+    }
+
+    private fun distanceToCityBoundsMeters(city: City, lat: Double, lon: Double): Double {
+        val clampedLat = lat.coerceIn(city.boundsSouth, city.boundsNorth)
+        val clampedLon = lon.coerceIn(city.boundsWest, city.boundsEast)
+        return haversineDistance(lat, lon, clampedLat, clampedLon) * 1000.0
+    }
+
+    private fun searchResultContainsLocation(
+        result: NominatimSearchResult,
+        lat: Double,
+        lon: Double
+    ): Boolean {
+        val bounds = result.boundingBox ?: return false
+        if (bounds.size < 4) return false
+
+        val south = bounds[0].toDoubleOrNull() ?: return false
+        val north = bounds[1].toDoubleOrNull() ?: return false
+        val west = bounds[2].toDoubleOrNull() ?: return false
+        val east = bounds[3].toDoubleOrNull() ?: return false
+
+        return lat in (south - CITY_BOUNDARY_TOLERANCE_DEGREES)..(north + CITY_BOUNDARY_TOLERANCE_DEGREES) &&
+            lon in (west - CITY_BOUNDARY_TOLERANCE_DEGREES)..(east + CITY_BOUNDARY_TOLERANCE_DEGREES)
+    }
+
+    private fun NominatimAddress?.extractBestCityName(): String? {
+        return this?.city
+            ?: this?.town
+            ?: this?.village
+            ?: this?.municipality
+            ?: this?.county
+            ?: this?.state
+    }
+
     private data class SnappedRoadCandidate(
         val road: RoadSegment,
         val points: List<RoadPoint>,
@@ -792,6 +1127,7 @@ class OsmRepository @Inject constructor(
         val rawLongitude: Double,
         val snappedLatitude: Double,
         val snappedLongitude: Double,
+        val distanceToRoadMeters: Double,
         val timestamp: Long
     )
 
@@ -809,6 +1145,23 @@ class OsmRepository @Inject constructor(
     private data class ParsedRoadImport(
         val segment: RoadSegment,
         val geometry: List<OverpassLatLon>
+    )
+
+    private data class GroupedRoadImport(
+        val road: ParsedRoadImport,
+        val normalizedName: String
+    )
+
+    private data class RoadGroupingKey(
+        val roadType: String,
+        val normalizedName: String
+    )
+
+    private data class BoundingBox(
+        val south: Double,
+        val west: Double,
+        val north: Double,
+        val east: Double
     )
 }
 

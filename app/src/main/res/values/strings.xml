@@ -42,6 +42,9 @@
     <string name="start_action">Начать</string>
     <string name="distance_km">%1$.1f км</string>
     <string name="focus_location_action">Фокус на текущем местоположении</string>
+    <string name="zoom_control_label">Масштаб карты</string>
+    <string name="zoom_in_action">Увеличить карту</string>
+    <string name="zoom_out_action">Уменьшить карту</string>
     <string name="walk_history_action">Список прогулок</string>
     <string name="walk_history_title">Прогулки</string>
     <string name="walk_history_empty">Пока нет сохранённых прогулок.</string>
@@ -49,6 +52,12 @@
     <string name="delete_walk_message">Будут удалены точки прогулки и закрашенные ею участки дорог.</string>
     <string name="walk_active_label">Идёт сейчас</string>
     <string name="walk_session_stats">%1$s • %2$.2f км прогулки • %3$.2f км дорог • %4$d точек</string>
+    <string name="weak_gps_title">Слабый GPS-сигнал</string>
+    <string name="weak_gps_message">Точность сейчас около %1$.0f м. Проксимити-зона показана временно, пока позиция не станет стабильнее.</string>
+    <string name="current_city_not_downloaded_title">Рядом новый город</string>
+    <string name="current_city_not_downloaded_message">Похоже, вы сейчас в %1$s. Карта этого города ещё не скачана.</string>
+    <string name="download_current_city_action">Скачать карту %1$s</string>
+    <string name="later_action">Позже</string>
 
     <string name="notification_channel_name">SpyWalker</string>
     <string name="notification_channel_description">Отслеживание маршрута в фоне</string>

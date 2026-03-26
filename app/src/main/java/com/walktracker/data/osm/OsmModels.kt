@@ -31,6 +31,25 @@ data class NominatimSearchResult(
     val geoJson: GeoJsonGeometry?
 )
 
+data class NominatimReverseResult(
+    @SerializedName("place_id")
+    val placeId: Long,
+
+    @SerializedName("display_name")
+    val displayName: String,
+
+    val address: NominatimAddress?
+)
+
+data class NominatimAddress(
+    val city: String? = null,
+    val town: String? = null,
+    val village: String? = null,
+    val municipality: String? = null,
+    val county: String? = null,
+    val state: String? = null
+)
+
 /**
  * GeoJSON geometry for city boundary polygon
  */

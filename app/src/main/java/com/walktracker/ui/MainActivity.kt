@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
@@ -54,6 +55,10 @@ fun SpyWalkerApp(
     val cityUiState by cityViewModel.uiState.collectAsState()
     var pendingTrackingStart by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = mapUiState.showCitySelection || mapUiState.showWalkSessions) {
+        mapViewModel.handleSystemBack()
+    }
+
     val foregroundLocationPermissions = rememberMultiplePermissionsState(
         permissions = listOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -83,6 +88,10 @@ fun SpyWalkerApp(
         if (!hasForegroundLocation) {
             foregroundLocationPermissions.launchMultiplePermissionRequest()
         }
+    }
+
+    LaunchedEffect(hasForegroundLocation) {
+        mapViewModel.setForegroundLocationEnabled(hasForegroundLocation)
     }
 
     LaunchedEffect(
@@ -132,13 +141,22 @@ fun SpyWalkerApp(
                 // Main map screen
                 MapScreen(
                     uiState = mapUiState,
+                    isCityDownloading = cityUiState.isDownloading,
+                    cityDownloadProgress = cityUiState.downloadProgress,
+                    cityDownloadStatus = cityUiState.downloadStatus,
                     onStartTracking = requestTrackingPermissions,
                     onStopTracking = mapViewModel::stopTracking,
+                    onMapZoomChange = mapViewModel::updateMapZoom,
                     onCitySelectionClick = mapViewModel::showCitySelection,
                     onFocusCurrentLocation = mapViewModel::requestFocusOnCurrentLocation,
                     onShowWalks = mapViewModel::showWalkSessions,
                     onHideWalks = mapViewModel::hideWalkSessions,
-                    onDeleteWalk = mapViewModel::deleteWalkSession
+                    onDeleteWalk = mapViewModel::deleteWalkSession,
+                    onDownloadSuggestedCity = { suggestion ->
+                        mapViewModel.dismissSuggestedCityDownload()
+                        cityViewModel.downloadCity(suggestion.searchResult)
+                    },
+                    onDismissSuggestedCity = mapViewModel::dismissSuggestedCityDownload
                 )
                 
                 // City selection overlay

@@ -11,15 +11,20 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.LocationCity
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +35,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +43,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -44,8 +51,12 @@ import com.spywalker.R
 import com.spywalker.data.City
 import com.spywalker.data.RoadCoverageChunk
 import com.spywalker.data.WalkSessionSummary
+import com.spywalker.repository.SuggestedCityDownload
 import com.spywalker.service.CurrentLocationSnapshot
 import com.spywalker.ui.theme.*
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -55,18 +66,26 @@ import org.osmdroid.views.overlay.Polygon
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
     uiState: MapUiState,
+    isCityDownloading: Boolean,
+    cityDownloadProgress: Float,
+    cityDownloadStatus: String,
     onStartTracking: () -> Unit,
     onStopTracking: () -> Unit,
+    onMapZoomChange: (Double) -> Unit,
     onCitySelectionClick: () -> Unit,
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     onHideWalks: () -> Unit,
-    onDeleteWalk: (Long) -> Unit
+    onDeleteWalk: (Long) -> Unit,
+    onDownloadSuggestedCity: (SuggestedCityDownload) -> Unit,
+    onDismissSuggestedCity: () -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         // OSMDroid карта
@@ -74,29 +93,45 @@ fun MapScreen(
             selectedCity = uiState.selectedCity,
             coveredRoadChunks = uiState.coveredRoadChunks,
             currentLocation = uiState.currentLocation,
+            mapZoomLevel = uiState.mapZoomLevel,
             focusRequestId = uiState.focusRequestId,
             focusZoomLevel = uiState.focusZoomLevel,
+            showWeakSignalProximity = uiState.isWeakGpsSignal,
+            onMapZoomChange = onMapZoomChange,
             modifier = Modifier.fillMaxSize()
         )
         
-        // Карточка с информацией о городе и покрытии
-        CoverageStatsCard(
-            selectedCity = uiState.selectedCity,
-            coveragePercentage = uiState.coveragePercentage,
-            totalRoadsCount = uiState.totalRoadsCount,
-            exploredRoadsCount = uiState.exploredRoadsCount,
-            totalRoadLengthKm = uiState.totalRoadLengthKm,
-            exploredRoadLengthKm = uiState.exploredRoadLengthKm,
-            totalSessions = uiState.totalSessions,
-            totalDistanceKm = uiState.totalDistanceKm,
-            isTracking = uiState.isTracking,
-            currentPoints = uiState.currentPointsCount,
-            onCityClick = onCitySelectionClick,
+        Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(16.dp)
-                .statusBarsPadding()
-        )
+                .statusBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            CoverageStatsCard(
+                selectedCity = uiState.selectedCity,
+                coveragePercentage = uiState.coveragePercentage,
+                totalRoadsCount = uiState.totalRoadsCount,
+                exploredRoadsCount = uiState.exploredRoadsCount,
+                totalRoadLengthKm = uiState.totalRoadLengthKm,
+                exploredRoadLengthKm = uiState.exploredRoadLengthKm,
+                totalSessions = uiState.totalSessions,
+                totalDistanceKm = uiState.totalDistanceKm,
+                isTracking = uiState.isTracking,
+                currentPoints = uiState.currentPointsCount,
+                onCityClick = onCitySelectionClick,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            SuggestedCityDownloadCard(
+                suggestion = uiState.suggestedCityDownload,
+                isDownloading = isCityDownloading,
+                downloadProgress = cityDownloadProgress,
+                downloadStatus = cityDownloadStatus,
+                onDownload = onDownloadSuggestedCity,
+                onDismiss = onDismissSuggestedCity
+            )
+        }
         
         // Кнопка Start/Stop
         PremiumTrackingButton(
@@ -110,6 +145,10 @@ fun MapScreen(
         )
 
         MapActionButtons(
+            mapZoomLevel = uiState.mapZoomLevel,
+            isWeakGpsSignal = uiState.isWeakGpsSignal,
+            weakGpsAccuracyMeters = uiState.weakGpsAccuracyMeters,
+            onZoomChange = onMapZoomChange,
             onFocusCurrentLocation = onFocusCurrentLocation,
             onShowWalks = onShowWalks,
             modifier = Modifier
@@ -129,16 +168,104 @@ fun MapScreen(
 }
 
 @Composable
+private fun SuggestedCityDownloadCard(
+    suggestion: SuggestedCityDownload?,
+    isDownloading: Boolean,
+    downloadProgress: Float,
+    downloadStatus: String,
+    onDownload: (SuggestedCityDownload) -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (suggestion == null && !isDownloading) return
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkCard.copy(alpha = 0.96f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.LocationCity,
+                    contentDescription = null,
+                    tint = Primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = stringResource(R.string.current_city_not_downloaded_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextOnDark,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!isDownloading) {
+                    TextButton(onClick = onDismiss) {
+                        Text(stringResource(R.string.later_action))
+                    }
+                }
+            }
+
+            if (suggestion != null) {
+                Text(
+                    text = stringResource(R.string.current_city_not_downloaded_message, suggestion.cityName),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextOnDarkSecondary,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+
+            if (isDownloading) {
+                Spacer(modifier = Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = downloadProgress.coerceIn(0f, 1f),
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Primary,
+                    trackColor = DarkSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = downloadStatus.ifBlank { stringResource(R.string.loading_action) },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextOnDarkSecondary
+                )
+            } else if (suggestion != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { onDownload(suggestion) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.download_current_city_action, suggestion.cityName))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun OsmMapView(
     selectedCity: City?,
     coveredRoadChunks: List<RoadCoverageChunk>,
     currentLocation: CurrentLocationSnapshot?,
+    mapZoomLevel: Double,
     focusRequestId: Int,
     focusZoomLevel: Double,
+    showWeakSignalProximity: Boolean,
+    onMapZoomChange: (Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val locationMarkerIcon = remember(context) { createCurrentLocationMarkerDrawable(context) }
+    val latestOnMapZoomChange by rememberUpdatedState(onMapZoomChange)
     val mapView = remember(context) {
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
@@ -153,11 +280,16 @@ fun OsmMapView(
     LaunchedEffect(selectedCity) {
         selectedCity?.let {
             mapView.controller.animateTo(GeoPoint(it.centerLat, it.centerLon))
-            mapView.controller.setZoom(13.0)
         }
     }
 
-    LaunchedEffect(coveredRoadChunks, currentLocation) {
+    LaunchedEffect(mapZoomLevel) {
+        if (abs(mapView.zoomLevelDouble - mapZoomLevel) > 0.05) {
+            mapView.controller.setZoom(mapZoomLevel)
+        }
+    }
+
+    LaunchedEffect(coveredRoadChunks, currentLocation, showWeakSignalProximity) {
         mapView.overlays.clear()
 
         coveredRoadChunks
@@ -183,14 +315,20 @@ fun OsmMapView(
         currentLocation?.let { location ->
             val geoPoint = GeoPoint(location.latitude, location.longitude)
 
-            val accuracyCircle = Polygon().apply {
-                points = Polygon.pointsAsCircle(geoPoint, location.accuracy.toDouble().coerceAtLeast(6.0))
-                fillPaint.color = Color.parseColor("#334FC3F7")
-                fillPaint.style = Paint.Style.FILL
-                outlinePaint.color = Color.parseColor("#884FC3F7")
-                outlinePaint.strokeWidth = 2f
+            if (showWeakSignalProximity) {
+                val proximityRadiusMeters = location.accuracy
+                    .toDouble()
+                    .coerceIn(10.0, 40.0)
+
+                val accuracyCircle = Polygon().apply {
+                    points = Polygon.pointsAsCircle(geoPoint, proximityRadiusMeters)
+                    fillPaint.color = Color.parseColor("#33FFB74D")
+                    fillPaint.style = Paint.Style.FILL
+                    outlinePaint.color = Color.parseColor("#CCFFB74D")
+                    outlinePaint.strokeWidth = 3f
+                }
+                mapView.overlays.add(accuracyCircle)
             }
-            mapView.overlays.add(accuracyCircle)
 
             val currentLocationMarker = Marker(mapView).apply {
                 position = geoPoint
@@ -204,18 +342,30 @@ fun OsmMapView(
         mapView.invalidate()
     }
 
+    DisposableEffect(mapView) {
+        val mapListener = object : MapListener {
+            override fun onScroll(event: ScrollEvent?): Boolean = false
+
+            override fun onZoom(event: ZoomEvent?): Boolean {
+                event?.zoomLevel?.let(latestOnMapZoomChange)
+                return false
+            }
+        }
+
+        mapView.addMapListener(mapListener)
+
+        onDispose {
+            mapView.removeMapListener(mapListener)
+            mapView.onDetach()
+        }
+    }
+
     LaunchedEffect(focusRequestId) {
         if (focusRequestId > 0) {
             currentLocation?.let { location ->
                 mapView.controller.animateTo(GeoPoint(location.latitude, location.longitude))
                 mapView.controller.setZoom(focusZoomLevel)
             }
-        }
-    }
-    
-    DisposableEffect(mapView) {
-        onDispose {
-            mapView.onDetach()
         }
     }
     
@@ -228,6 +378,10 @@ fun OsmMapView(
 
 @Composable
 private fun MapActionButtons(
+    mapZoomLevel: Double,
+    isWeakGpsSignal: Boolean,
+    weakGpsAccuracyMeters: Float?,
+    onZoomChange: (Double) -> Unit,
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     modifier: Modifier = Modifier
@@ -237,6 +391,14 @@ private fun MapActionButtons(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.End
     ) {
+        WeakGpsSignalCard(
+            isVisible = isWeakGpsSignal,
+            weakGpsAccuracyMeters = weakGpsAccuracyMeters
+        )
+        VerticalZoomControl(
+            zoomLevel = mapZoomLevel,
+            onZoomChange = onZoomChange
+        )
         SmallFloatingActionButton(onClick = onFocusCurrentLocation) {
             Icon(Icons.Default.MyLocation, contentDescription = stringResource(R.string.focus_location_action))
         }
@@ -248,6 +410,127 @@ private fun MapActionButtons(
         }
     }
 }
+
+@Composable
+private fun WeakGpsSignalCard(
+    isVisible: Boolean,
+    weakGpsAccuracyMeters: Float?
+) {
+    if (!isVisible || weakGpsAccuracyMeters == null) return
+
+    Card(
+        modifier = Modifier.widthIn(max = 220.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = DarkCard.copy(alpha = 0.96f)
+        ),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(
+                imageVector = Icons.Default.WarningAmber,
+                contentDescription = null,
+                tint = Accent,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = stringResource(R.string.weak_gps_title),
+                    color = TextOnDark,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.weak_gps_message, weakGpsAccuracyMeters),
+                    color = TextOnDarkSecondary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VerticalZoomControl(
+    zoomLevel: Double,
+    onZoomChange: (Double) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sliderValue = zoomLevel.toFloat().coerceIn(MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL)
+
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = DarkCard.copy(alpha = 0.94f)),
+        shape = RoundedCornerShape(22.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(onClick = {
+                onZoomChange((zoomLevel + 1.0).coerceAtMost(MAX_ZOOM_LEVEL.toDouble()))
+            }) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = stringResource(R.string.zoom_in_action),
+                    tint = TextOnDark
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = DarkSurfaceVariant.copy(alpha = 0.85f)
+            ) {
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .height(230.dp)
+                        .width(56.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Slider(
+                        value = sliderValue,
+                        onValueChange = { onZoomChange(it.toDouble()) },
+                        valueRange = MIN_ZOOM_LEVEL..MAX_ZOOM_LEVEL,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Primary,
+                            activeTrackColor = Primary,
+                            inactiveTrackColor = ComposeColor.White.copy(alpha = 0.18f)
+                        ),
+                        modifier = Modifier
+                            .width(maxHeight)
+                            .graphicsLayer { rotationZ = -90f }
+                    )
+
+                    Text(
+                        text = zoomLevel.roundToInt().toString(),
+                        color = TextOnDark,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
+                    )
+                }
+            }
+
+            IconButton(onClick = {
+                onZoomChange((zoomLevel - 1.0).coerceAtLeast(MIN_ZOOM_LEVEL.toDouble()))
+            }) {
+                Icon(
+                    imageVector = Icons.Default.Remove,
+                    contentDescription = stringResource(R.string.zoom_out_action),
+                    tint = TextOnDark
+                )
+            }
+        }
+    }
+}
+
+private const val MIN_ZOOM_LEVEL = 3f
+private const val MAX_ZOOM_LEVEL = 20f
 
 private fun createCurrentLocationMarkerDrawable(context: Context): BitmapDrawable {
     val density = context.resources.displayMetrics.density

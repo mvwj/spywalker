@@ -6,6 +6,7 @@ import retrofit2.http.Query
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.Headers
+import retrofit2.http.Url
 
 /**
  * Nominatim API for searching cities and getting boundaries
@@ -22,6 +23,16 @@ interface NominatimApi {
         @Query("limit") limit: Int = 10,
         @Query("addressdetails") addressDetails: Int = 1
     ): List<NominatimSearchResult>
+
+    @GET("reverse")
+    @Headers("User-Agent: SpyWalker/1.0")
+    suspend fun reverseGeocode(
+        @Query("lat") latitude: Double,
+        @Query("lon") longitude: Double,
+        @Query("format") format: String = "jsonv2",
+        @Query("zoom") zoom: Int = 12,
+        @Query("addressdetails") addressDetails: Int = 1
+    ): NominatimReverseResult
 }
 
 /**
@@ -30,13 +41,14 @@ interface NominatimApi {
  */
 interface OverpassApi {
     @FormUrlEncoded
-    @POST("interpreter")
+    @POST
     @Headers(
         "Content-Type: application/x-www-form-urlencoded",
         "Accept: application/json",
         "User-Agent: SpyWalker/1.0"
     )
     suspend fun queryRoads(
+        @Url url: String,
         @Field("data") query: String
     ): OverpassResponse
 }

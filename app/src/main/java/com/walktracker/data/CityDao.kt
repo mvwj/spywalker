@@ -19,6 +19,9 @@ interface CityDao {
     
     @Query("SELECT * FROM cities ORDER BY name ASC")
     fun getAllCities(): Flow<List<City>>
+
+    @Query("SELECT * FROM cities ORDER BY name ASC")
+    suspend fun getAllCitiesSync(): List<City>
     
     @Query("SELECT * FROM cities WHERE isSelected = 1 LIMIT 1")
     fun getSelectedCity(): Flow<City?>
