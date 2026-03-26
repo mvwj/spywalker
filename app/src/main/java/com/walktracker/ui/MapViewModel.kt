@@ -50,6 +50,7 @@ data class MapUiState(
     val coveragePercentage: Float = 0f,
     val suggestedCityDownload: SuggestedCityDownload? = null,
     val isCoverageStatsExpanded: Boolean = true,
+    val isZoomControlVisible: Boolean = true,
     
     // City selection
     val showCitySelection: Boolean = false,
@@ -509,6 +510,10 @@ class MapViewModel @Inject constructor(
 
     fun toggleCoverageStats() {
         _uiState.update { it.copy(isCoverageStatsExpanded = !it.isCoverageStatsExpanded) }
+    }
+
+    fun toggleZoomControl() {
+        _uiState.update { it.copy(isZoomControlVisible = !it.isZoomControlVisible) }
     }
 
     fun hideWalkSessions() {

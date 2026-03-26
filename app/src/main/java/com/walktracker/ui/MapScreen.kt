@@ -6,22 +6,25 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.drawable.BitmapDrawable
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
@@ -50,7 +53,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -88,6 +90,7 @@ fun MapScreen(
     onMapZoomChange: (Double) -> Unit,
     onCitySelectionClick: () -> Unit,
     onToggleCoverageStats: () -> Unit,
+    onToggleZoomControl: () -> Unit,
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     onHideWalks: () -> Unit,
@@ -158,7 +161,9 @@ fun MapScreen(
             mapZoomLevel = uiState.mapZoomLevel,
             isWeakGpsSignal = uiState.isWeakGpsSignal,
             weakGpsAccuracyMeters = uiState.weakGpsAccuracyMeters,
+            isZoomControlVisible = uiState.isZoomControlVisible,
             onZoomChange = onMapZoomChange,
+            onToggleZoomControl = onToggleZoomControl,
             onFocusCurrentLocation = onFocusCurrentLocation,
             onShowWalks = onShowWalks,
             modifier = Modifier
@@ -391,7 +396,9 @@ private fun MapActionButtons(
     mapZoomLevel: Double,
     isWeakGpsSignal: Boolean,
     weakGpsAccuracyMeters: Float?,
+    isZoomControlVisible: Boolean,
     onZoomChange: (Double) -> Unit,
+    onToggleZoomControl: () -> Unit,
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     modifier: Modifier = Modifier
@@ -405,10 +412,28 @@ private fun MapActionButtons(
             isVisible = isWeakGpsSignal,
             weakGpsAccuracyMeters = weakGpsAccuracyMeters
         )
-        VerticalZoomControl(
-            zoomLevel = mapZoomLevel,
-            onZoomChange = onZoomChange
-        )
+        SmallFloatingActionButton(onClick = onToggleZoomControl) {
+            Icon(
+                imageVector = if (isZoomControlVisible) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                contentDescription = stringResource(
+                    if (isZoomControlVisible) {
+                        R.string.hide_zoom_control_action
+                    } else {
+                        R.string.show_zoom_control_action
+                    }
+                )
+            )
+        }
+        AnimatedVisibility(
+            visible = isZoomControlVisible,
+            enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
+            exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
+        ) {
+            VerticalZoomControl(
+                zoomLevel = mapZoomLevel,
+                onZoomChange = onZoomChange
+            )
+        }
         SmallFloatingActionButton(onClick = onFocusCurrentLocation) {
             Icon(Icons.Default.MyLocation, contentDescription = stringResource(R.string.focus_location_action))
         }
@@ -477,48 +502,22 @@ private fun VerticalZoomControl(
         colors = CardDefaults.cardColors(containerColor = DarkCard.copy(alpha = 0.94f)),
         shape = RoundedCornerShape(22.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = DarkSurfaceVariant.copy(alpha = 0.85f),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp)
         ) {
-            IconButton(onClick = {
-                onZoomChange((zoomLevel + 1.0).coerceAtMost(MAX_ZOOM_LEVEL.toDouble()))
-            }) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = stringResource(R.string.zoom_in_action),
-                    tint = TextOnDark
-                )
-            }
-
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = DarkSurfaceVariant.copy(alpha = 0.85f)
+            Box(
+                modifier = Modifier
+                    .height(230.dp)
+                    .width(56.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .height(230.dp)
-                        .width(56.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    FullHeightVerticalZoomSlider(
-                        value = sliderValue,
-                        onValueChange = { onZoomChange(it.toDouble()) },
-                        valueRange = MIN_ZOOM_LEVEL..MAX_ZOOM_LEVEL,
-                        modifier = Modifier
-                            .fillMaxSize()
-                    )
-                }
-            }
-
-            IconButton(onClick = {
-                onZoomChange((zoomLevel - 1.0).coerceAtLeast(MIN_ZOOM_LEVEL.toDouble()))
-            }) {
-                Icon(
-                    imageVector = Icons.Default.Remove,
-                    contentDescription = stringResource(R.string.zoom_out_action),
-                    tint = TextOnDark
+                FullHeightVerticalZoomSlider(
+                    value = sliderValue,
+                    onValueChange = { onZoomChange(it.toDouble()) },
+                    valueRange = MIN_ZOOM_LEVEL..MAX_ZOOM_LEVEL,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }

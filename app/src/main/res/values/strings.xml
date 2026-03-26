@@ -45,6 +45,8 @@
     <string name="zoom_control_label">Масштаб карты</string>
     <string name="zoom_in_action">Увеличить карту</string>
     <string name="zoom_out_action">Уменьшить карту</string>
+    <string name="hide_zoom_control_action">Скрыть виджет масштаба</string>
+    <string name="show_zoom_control_action">Показать виджет масштаба</string>
     <string name="walk_history_action">Список прогулок</string>
     <string name="walk_history_title">Прогулки</string>
     <string name="walk_history_empty">Пока нет сохранённых прогулок.</string>
