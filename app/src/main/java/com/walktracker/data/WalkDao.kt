@@ -20,6 +20,9 @@ interface WalkDao {
     @Query("SELECT * FROM walk_sessions WHERE id = :sessionId")
     suspend fun getSession(sessionId: Long): WalkSession?
 
+    @Query("UPDATE walk_sessions SET endTime = :endTime WHERE endTime IS NULL")
+    suspend fun endActiveSessions(endTime: Long)
+
     @Query("DELETE FROM walk_sessions WHERE id = :sessionId")
     suspend fun deleteSession(sessionId: Long)
     

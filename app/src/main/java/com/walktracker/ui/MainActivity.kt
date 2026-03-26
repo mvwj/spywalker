@@ -153,6 +153,7 @@ fun SpyWalkerApp(
                     onFocusCurrentLocation = mapViewModel::requestFocusOnCurrentLocation,
                     onShowWalks = mapViewModel::showWalkSessions,
                     onHideWalks = mapViewModel::hideWalkSessions,
+                    onStopWalkSession = mapViewModel::stopWalkSession,
                     onDeleteWalk = mapViewModel::deleteWalkSession,
                     onDownloadSuggestedCity = { suggestion ->
                         mapViewModel.dismissSuggestedCityDownload()

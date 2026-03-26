@@ -21,7 +21,9 @@ class WalkRepository @Inject constructor(
     // === Ð¡ÐµÑÑÐ¸Ð¸ ===
     
     suspend fun startNewSession(): Long {
-        val session = WalkSession()
+        val now = System.currentTimeMillis()
+        walkDao.endActiveSessions(now)
+        val session = WalkSession(startTime = now)
         return walkDao.insertSession(session)
     }
     

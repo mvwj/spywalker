@@ -36,7 +36,7 @@ data class MapUiState(
     val weakGpsAccuracyMeters: Float? = null,
     val focusRequestId: Int = 0,
     val focusZoomLevel: Double = 18.0,
-    val mapZoomLevel: Double = 3.0,
+    val mapZoomLevel: Double = 5.0,
     val totalSessions: Int = 0,
     val totalDistanceKm: Double = 0.0,
     val totalWalkingTimeMs: Long = 0L,
@@ -65,9 +65,9 @@ class MapViewModel @Inject constructor(
     application: Application
 ) : AndroidViewModel(application) {
     companion object {
-        private const val MIN_MAP_ZOOM = 3.0
+        private const val MIN_MAP_ZOOM = 5.0
         private const val DEFAULT_CITY_ZOOM = 13.0
-        private const val MAX_MAP_ZOOM = 20.0
+        private const val MAX_MAP_ZOOM = 18.0
         private const val NORMAL_FOCUS_ZOOM = 17.0
         private const val PASSIVE_LOCATION_INTERVAL_MS = 10_000L
         private const val PASSIVE_LOCATION_MIN_DISTANCE_METERS = 15f
@@ -468,6 +468,16 @@ class MapViewModel @Inject constructor(
     
     fun stopTracking() {
         LocationService.stop(getApplication())
+    }
+
+    fun stopWalkSession(sessionId: Long) {
+        viewModelScope.launch {
+            if (_uiState.value.isTracking) {
+                LocationService.stop(getApplication())
+            } else {
+                walkRepository.endSession(sessionId)
+            }
+        }
     }
     
     fun showCitySelection() {

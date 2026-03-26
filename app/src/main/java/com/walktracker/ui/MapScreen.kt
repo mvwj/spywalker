@@ -94,6 +94,7 @@ fun MapScreen(
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     onHideWalks: () -> Unit,
+    onStopWalkSession: (Long) -> Unit,
     onDeleteWalk: (Long) -> Unit,
     onDownloadSuggestedCity: (SuggestedCityDownload) -> Unit,
     onDismissSuggestedCity: () -> Unit
@@ -157,10 +158,17 @@ fun MapScreen(
                 .navigationBarsPadding()
         )
 
+        WeakGpsSignalCard(
+            isVisible = uiState.isWeakGpsSignal,
+            weakGpsAccuracyMeters = uiState.weakGpsAccuracyMeters,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 20.dp, bottom = 136.dp)
+                .navigationBarsPadding()
+        )
+
         MapActionButtons(
             mapZoomLevel = uiState.mapZoomLevel,
-            isWeakGpsSignal = uiState.isWeakGpsSignal,
-            weakGpsAccuracyMeters = uiState.weakGpsAccuracyMeters,
             isZoomControlVisible = uiState.isZoomControlVisible,
             onZoomChange = onMapZoomChange,
             onToggleZoomControl = onToggleZoomControl,
@@ -176,6 +184,7 @@ fun MapScreen(
             WalkSessionsSheet(
                 sessions = uiState.sessionSummaries,
                 onDismiss = onHideWalks,
+                onStopWalkSession = onStopWalkSession,
                 onDeleteWalk = onDeleteWalk
             )
         }
@@ -285,7 +294,7 @@ fun OsmMapView(
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
-            controller.setZoom(3.0)
+            controller.setZoom(5.0)
             // Нейтральная стартовая позиция до выбора города
             controller.setCenter(GeoPoint(20.0, 0.0))
         }
@@ -298,8 +307,11 @@ fun OsmMapView(
         }
     }
 
-    LaunchedEffect(mapZoomLevel) {
+    LaunchedEffect(mapZoomLevel, currentLocation) {
         if (abs(mapView.zoomLevelDouble - mapZoomLevel) > 0.05) {
+            currentLocation?.let { location ->
+                mapView.controller.setCenter(GeoPoint(location.latitude, location.longitude))
+            }
             mapView.controller.setZoom(mapZoomLevel)
         }
     }
@@ -394,8 +406,6 @@ fun OsmMapView(
 @Composable
 private fun MapActionButtons(
     mapZoomLevel: Double,
-    isWeakGpsSignal: Boolean,
-    weakGpsAccuracyMeters: Float?,
     isZoomControlVisible: Boolean,
     onZoomChange: (Double) -> Unit,
     onToggleZoomControl: () -> Unit,
@@ -408,10 +418,6 @@ private fun MapActionButtons(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.End
     ) {
-        WeakGpsSignalCard(
-            isVisible = isWeakGpsSignal,
-            weakGpsAccuracyMeters = weakGpsAccuracyMeters
-        )
         SmallFloatingActionButton(onClick = onToggleZoomControl) {
             Icon(
                 imageVector = if (isZoomControlVisible) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
@@ -449,12 +455,13 @@ private fun MapActionButtons(
 @Composable
 private fun WeakGpsSignalCard(
     isVisible: Boolean,
-    weakGpsAccuracyMeters: Float?
+    weakGpsAccuracyMeters: Float?,
+    modifier: Modifier = Modifier
 ) {
     if (!isVisible || weakGpsAccuracyMeters == null) return
 
     Card(
-        modifier = Modifier.widthIn(max = 220.dp),
+        modifier = modifier.widthIn(max = 220.dp),
         colors = CardDefaults.cardColors(
             containerColor = DarkCard.copy(alpha = 0.96f)
         ),
@@ -642,8 +649,8 @@ private fun FullHeightVerticalZoomSlider(
     }
 }
 
-private const val MIN_ZOOM_LEVEL = 3f
-private const val MAX_ZOOM_LEVEL = 20f
+private const val MIN_ZOOM_LEVEL = 5f
+private const val MAX_ZOOM_LEVEL = 18f
 
 private fun createCurrentLocationMarkerDrawable(context: Context): BitmapDrawable {
     val density = context.resources.displayMetrics.density
@@ -672,6 +679,7 @@ private fun createCurrentLocationMarkerDrawable(context: Context): BitmapDrawabl
 private fun WalkSessionsSheet(
     sessions: List<WalkSessionSummary>,
     onDismiss: () -> Unit,
+    onStopWalkSession: (Long) -> Unit,
     onDeleteWalk: (Long) -> Unit
 ) {
     var pendingDeleteSessionId by remember { mutableStateOf<Long?>(null) }
@@ -709,6 +717,7 @@ private fun WalkSessionsSheet(
                     items(sessions, key = { it.sessionId }) { session ->
                         WalkSessionCard(
                             session = session,
+                            onStopWalkSession = { onStopWalkSession(session.sessionId) },
                             onDelete = { pendingDeleteSessionId = session.sessionId }
                         )
                     }
@@ -744,6 +753,7 @@ private fun WalkSessionsSheet(
 @Composable
 private fun WalkSessionCard(
     session: WalkSessionSummary,
+    onStopWalkSession: () -> Unit,
     onDelete: () -> Unit
 ) {
     val dateFormatter = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
@@ -786,9 +796,27 @@ private fun WalkSessionCard(
                     )
                 }
             }
-
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete_action), tint = Error)
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (session.isActive) {
+                    FilledTonalIconButton(onClick = onStopWalkSession) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_stop),
+                            contentDescription = stringResource(R.string.stop_action),
+                            tint = Error
+                        )
+                    }
+                } else {
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = stringResource(R.string.delete_action),
+                            tint = Error
+                        )
+                    }
+                }
             }
         }
     }
