@@ -8,6 +8,7 @@ import org.osmdroid.config.Configuration
 class SpyWalkerApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        LocaleManager.applySavedLocale(this)
         // ÐÐ°ÑÑ‚Ñ€Ð¾Ð¹ÐºÐ° OSMDroid
         Configuration.getInstance().load(this, getSharedPreferences("osmdroid", MODE_PRIVATE))
         Configuration.getInstance().userAgentValue = packageName

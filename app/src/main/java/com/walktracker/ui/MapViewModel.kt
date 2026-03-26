@@ -25,6 +25,12 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.abs
 
+data class WalkRoutePreview(
+    val session: WalkSessionSummary,
+    val points: List<com.spywalker.data.WalkPoint> = emptyList(),
+    val isLoading: Boolean = true
+)
+
 data class MapUiState(
     val exploredRoads: List<RoadSegment> = emptyList(),
     val coveredRoadChunks: List<RoadCoverageChunk> = emptyList(),
@@ -51,6 +57,7 @@ data class MapUiState(
     val suggestedCityDownload: SuggestedCityDownload? = null,
     val isCoverageStatsExpanded: Boolean = true,
     val isZoomControlVisible: Boolean = true,
+    val selectedWalkRoutePreview: WalkRoutePreview? = null,
     
     // City selection
     val showCitySelection: Boolean = false,
@@ -88,6 +95,7 @@ class MapViewModel @Inject constructor(
     private var passiveLocationSnapshot: CurrentLocationSnapshot? = null
     private var trackingLocationSnapshot: CurrentLocationSnapshot? = null
     private var autoCityJob: Job? = null
+    private var walkRoutePreviewJob: Job? = null
     private var lastCitySuggestionLookupAt: Long = 0L
     private var lastCitySuggestionLookupLocation: CurrentLocationSnapshot? = null
     private var weakSignalSampleCount = 0
@@ -518,6 +526,43 @@ class MapViewModel @Inject constructor(
         _uiState.update { it.copy(showWalkSessions = true) }
     }
 
+    fun previewWalkRoute(session: WalkSessionSummary) {
+        walkRoutePreviewJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedWalkRoutePreview = WalkRoutePreview(
+                    session = session,
+                    points = emptyList(),
+                    isLoading = true
+                )
+            )
+        }
+
+        walkRoutePreviewJob = viewModelScope.launch {
+            walkRepository.getPointsForSession(session.sessionId).collect { points ->
+                _uiState.update { state ->
+                    val currentPreview = state.selectedWalkRoutePreview
+                    if (currentPreview?.session?.sessionId != session.sessionId) {
+                        state
+                    } else {
+                        state.copy(
+                            selectedWalkRoutePreview = currentPreview.copy(
+                                points = points,
+                                isLoading = false
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissWalkRoutePreview() {
+        walkRoutePreviewJob?.cancel()
+        walkRoutePreviewJob = null
+        _uiState.update { it.copy(selectedWalkRoutePreview = null) }
+    }
+
     fun toggleCoverageStats() {
         _uiState.update { it.copy(isCoverageStatsExpanded = !it.isCoverageStatsExpanded) }
     }
@@ -527,6 +572,7 @@ class MapViewModel @Inject constructor(
     }
 
     fun hideWalkSessions() {
+        dismissWalkRoutePreview()
         _uiState.update { it.copy(showWalkSessions = false) }
     }
 
@@ -553,6 +599,7 @@ class MapViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        walkRoutePreviewJob?.cancel()
         stopPassiveLocationUpdates(clearLocation = false)
         super.onCleared()
     }

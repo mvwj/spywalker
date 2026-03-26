@@ -6,6 +6,7 @@
     <string name="permission_description">Для отслеживания ваших прогулок приложению нужен доступ к геолокации. Разрешение для работы в фоне приложение запросит отдельно при запуске трекинга.</string>
     <string name="grant_access">Разрешить доступ</string>
     <string name="open_settings">Настройки</string>
+    <string name="app_settings_action">Настройки приложения</string>
     <string name="requesting_permissions">Запрашиваем разрешения...</string>
 
     <string name="city_selection_title">Выбор города</string>
@@ -55,13 +56,20 @@
     <string name="walk_active_label">Идёт сейчас</string>
     <string name="walk_session_stats">%1$s • %2$.2f км прогулки • %3$.2f км дорог • %4$d точек</string>
     <string name="weak_gps_title">Слабый GPS-сигнал</string>
-    <string name="weak_gps_message">Точность сейчас около %1$.0f м. Проксимити-зона показана временно, пока позиция не станет стабильнее.</string>
+    <string name="weak_gps_message">Точность сейчас около %1$.0f м</string>
     <string name="current_city_not_downloaded_title">Рядом новый город</string>
     <string name="current_city_not_downloaded_message">Похоже, вы сейчас в %1$s. Карта этого города ещё не скачана.</string>
     <string name="download_current_city_action">Скачать карту %1$s</string>
     <string name="later_action">Позже</string>
     <string name="collapse_city_stats_action">Свернуть виджет города и статистики</string>
     <string name="expand_city_stats_action">Развернуть виджет города и статистики</string>
+    <string name="walk_route_preview_title">Маршрут прогулки</string>
+    <string name="walk_route_preview_empty">Для этой прогулки пока недостаточно точек маршрута.</string>
+    <string name="settings_title">Настройки</string>
+    <string name="language_settings_title">Язык приложения</string>
+    <string name="language_russian">Русский</string>
+    <string name="language_english">English</string>
+    <string name="close_action">Закрыть</string>
 
     <string name="notification_channel_name">SpyWalker</string>
     <string name="notification_channel_description">Отслеживание маршрута в фоне</string>

@@ -1,6 +1,8 @@
 ﻿package com.spywalker.ui
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -14,6 +16,7 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -22,12 +25,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.accompanist.permissions.*
+import com.spywalker.LocaleManager
 import com.spywalker.R
 import com.spywalker.ui.theme.SpyWalkerTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleManager.wrapContext(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -54,9 +62,14 @@ fun SpyWalkerApp(
     val mapUiState by mapViewModel.uiState.collectAsState()
     val cityUiState by cityViewModel.uiState.collectAsState()
     var pendingTrackingStart by remember { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    val selectedLanguage = remember { mutableStateOf(LocaleManager.getSavedLanguage(context)) }
 
-    BackHandler(enabled = mapUiState.showCitySelection || mapUiState.showWalkSessions) {
-        mapViewModel.handleSystemBack()
+    BackHandler(enabled = showSettings || mapUiState.showCitySelection || mapUiState.showWalkSessions) {
+        when {
+            showSettings -> showSettings = false
+            else -> mapViewModel.handleSystemBack()
+        }
     }
 
     val foregroundLocationPermissions = rememberMultiplePermissionsState(
@@ -153,6 +166,22 @@ fun SpyWalkerApp(
                     onFocusCurrentLocation = mapViewModel::requestFocusOnCurrentLocation,
                     onShowWalks = mapViewModel::showWalkSessions,
                     onHideWalks = mapViewModel::hideWalkSessions,
+                    isSettingsVisible = showSettings,
+                    selectedLanguage = selectedLanguage.value,
+                    onShowSettings = { showSettings = true },
+                    onDismissSettings = { showSettings = false },
+                    onSelectLanguage = { language ->
+                        selectedLanguage.value = language
+                        if (LocaleManager.getSavedLanguage(context) != language) {
+                            LocaleManager.saveLanguage(context, language)
+                            showSettings = false
+                            (context as? Activity)?.recreate()
+                        } else {
+                            showSettings = false
+                        }
+                    },
+                    onPreviewWalkRoute = mapViewModel::previewWalkRoute,
+                    onDismissWalkRoutePreview = mapViewModel::dismissWalkRoutePreview,
                     onStopWalkSession = mapViewModel::stopWalkSession,
                     onDeleteWalk = mapViewModel::deleteWalkSession,
                     onDownloadSuggestedCity = { suggestion ->

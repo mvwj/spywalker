@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.LocationCity
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,13 +57,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import com.spywalker.R
 import com.spywalker.data.City
 import com.spywalker.data.RoadCoverageChunk
+import com.spywalker.data.WalkPoint
 import com.spywalker.data.WalkSessionSummary
 import com.spywalker.repository.SuggestedCityDownload
 import com.spywalker.service.CurrentLocationSnapshot
 import com.spywalker.ui.theme.*
+import org.osmdroid.util.BoundingBox
 import org.osmdroid.events.MapListener
 import org.osmdroid.events.ScrollEvent
 import org.osmdroid.events.ZoomEvent
@@ -94,6 +98,13 @@ fun MapScreen(
     onFocusCurrentLocation: () -> Unit,
     onShowWalks: () -> Unit,
     onHideWalks: () -> Unit,
+    isSettingsVisible: Boolean,
+    selectedLanguage: String,
+    onShowSettings: () -> Unit,
+    onDismissSettings: () -> Unit,
+    onSelectLanguage: (String) -> Unit,
+    onPreviewWalkRoute: (WalkSessionSummary) -> Unit,
+    onDismissWalkRoutePreview: () -> Unit,
     onStopWalkSession: (Long) -> Unit,
     onDeleteWalk: (Long) -> Unit,
     onDownloadSuggestedCity: (SuggestedCityDownload) -> Unit,
@@ -173,6 +184,7 @@ fun MapScreen(
             onZoomChange = onMapZoomChange,
             onToggleZoomControl = onToggleZoomControl,
             onFocusCurrentLocation = onFocusCurrentLocation,
+            onShowSettings = onShowSettings,
             onShowWalks = onShowWalks,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -180,10 +192,21 @@ fun MapScreen(
                 .navigationBarsPadding()
         )
 
+        if (isSettingsVisible) {
+            SettingsDialog(
+                selectedLanguage = selectedLanguage,
+                onDismiss = onDismissSettings,
+                onSelectLanguage = onSelectLanguage
+            )
+        }
+
         if (uiState.showWalkSessions) {
             WalkSessionsSheet(
                 sessions = uiState.sessionSummaries,
+                selectedWalkRoutePreview = uiState.selectedWalkRoutePreview,
                 onDismiss = onHideWalks,
+                onPreviewWalkRoute = onPreviewWalkRoute,
+                onDismissWalkRoutePreview = onDismissWalkRoutePreview,
                 onStopWalkSession = onStopWalkSession,
                 onDeleteWalk = onDeleteWalk
             )
@@ -410,6 +433,7 @@ private fun MapActionButtons(
     onZoomChange: (Double) -> Unit,
     onToggleZoomControl: () -> Unit,
     onFocusCurrentLocation: () -> Unit,
+    onShowSettings: () -> Unit,
     onShowWalks: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -442,6 +466,9 @@ private fun MapActionButtons(
         }
         SmallFloatingActionButton(onClick = onFocusCurrentLocation) {
             Icon(Icons.Default.MyLocation, contentDescription = stringResource(R.string.focus_location_action))
+        }
+        SmallFloatingActionButton(onClick = onShowSettings) {
+            Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.app_settings_action))
         }
         SmallFloatingActionButton(onClick = onShowWalks) {
             Icon(
@@ -493,6 +520,76 @@ private fun WeakGpsSignalCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsDialog(
+    selectedLanguage: String,
+    onDismiss: () -> Unit,
+    onSelectLanguage: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(R.string.settings_title))
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = stringResource(R.string.language_settings_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = TextOnDark
+                )
+
+                LanguageOptionRow(
+                    label = stringResource(R.string.language_russian),
+                    selected = selectedLanguage == "ru",
+                    onClick = { onSelectLanguage("ru") }
+                )
+                LanguageOptionRow(
+                    label = stringResource(R.string.language_english),
+                    selected = selectedLanguage == "en",
+                    onClick = { onSelectLanguage("en") }
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.close_action))
+            }
+        },
+        containerColor = DarkCard,
+        textContentColor = TextOnDark,
+        titleContentColor = TextOnDark
+    )
+}
+
+@Composable
+private fun LanguageOptionRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = label,
+            color = TextOnDark,
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
 }
 
@@ -631,21 +728,6 @@ private fun FullHeightVerticalZoomSlider(
             )
         }
 
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 8.dp),
-            shape = RoundedCornerShape(10.dp),
-            color = DarkCard.copy(alpha = 0.92f)
-        ) {
-            Text(
-                text = clampedValue.roundToInt().toString(),
-                color = TextOnDark,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-            )
-        }
     }
 }
 
@@ -674,11 +756,53 @@ private fun createCurrentLocationMarkerDrawable(context: Context): BitmapDrawabl
     return BitmapDrawable(context.resources, bitmap)
 }
 
+private fun createRouteEndpointMarkerDrawable(context: Context, fillColor: Int): BitmapDrawable {
+    val density = context.resources.displayMetrics.density
+    val sizePx = (22 * density).toInt().coerceAtLeast(22)
+    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+
+    val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+    val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = fillColor
+        style = Paint.Style.FILL
+    }
+
+    val center = sizePx / 2f
+    canvas.drawCircle(center, center, sizePx * 0.42f, outerPaint)
+    canvas.drawCircle(center, center, sizePx * 0.28f, innerPaint)
+
+    return BitmapDrawable(context.resources, bitmap)
+}
+
+private fun createBoundingBox(points: List<GeoPoint>): BoundingBox {
+    val maxLat = points.maxOf { it.latitude }
+    val minLat = points.minOf { it.latitude }
+    val maxLon = points.maxOf { it.longitude }
+    val minLon = points.minOf { it.longitude }
+
+    val latPadding = ((maxLat - minLat) * 0.15).coerceAtLeast(0.001)
+    val lonPadding = ((maxLon - minLon) * 0.15).coerceAtLeast(0.001)
+
+    return BoundingBox(
+        maxLat + latPadding,
+        maxLon + lonPadding,
+        minLat - latPadding,
+        minLon - lonPadding
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun WalkSessionsSheet(
     sessions: List<WalkSessionSummary>,
+    selectedWalkRoutePreview: WalkRoutePreview?,
     onDismiss: () -> Unit,
+    onPreviewWalkRoute: (WalkSessionSummary) -> Unit,
+    onDismissWalkRoutePreview: () -> Unit,
     onStopWalkSession: (Long) -> Unit,
     onDeleteWalk: (Long) -> Unit
 ) {
@@ -717,6 +841,7 @@ private fun WalkSessionsSheet(
                     items(sessions, key = { it.sessionId }) { session ->
                         WalkSessionCard(
                             session = session,
+                            onClick = { onPreviewWalkRoute(session) },
                             onStopWalkSession = { onStopWalkSession(session.sessionId) },
                             onDelete = { pendingDeleteSessionId = session.sessionId }
                         )
@@ -724,6 +849,13 @@ private fun WalkSessionsSheet(
                 }
             }
         }
+    }
+
+    selectedWalkRoutePreview?.let { routePreview ->
+        WalkRoutePreviewDialog(
+            routePreview = routePreview,
+            onDismiss = onDismissWalkRoutePreview
+        )
     }
 
     pendingDeleteSessionId?.let { sessionId ->
@@ -753,12 +885,15 @@ private fun WalkSessionsSheet(
 @Composable
 private fun WalkSessionCard(
     session: WalkSessionSummary,
+    onClick: () -> Unit,
     onStopWalkSession: () -> Unit,
     onDelete: () -> Unit
 ) {
     val dateFormatter = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = DarkSurfaceVariant),
         shape = RoundedCornerShape(16.dp)
     ) {
@@ -820,6 +955,167 @@ private fun WalkSessionCard(
             }
         }
     }
+}
+
+@Composable
+private fun WalkRoutePreviewDialog(
+    routePreview: WalkRoutePreview,
+    onDismiss: () -> Unit
+) {
+    val dateFormatter = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = DarkCard,
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.walk_route_preview_title),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextOnDark
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = dateFormatter.format(Date(routePreview.session.startTime)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextOnDarkSecondary
+                        )
+                    }
+
+                    TextButton(onClick = onDismiss) {
+                        Text(stringResource(R.string.close_action))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                when {
+                    routePreview.isLoading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(280.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+
+                    routePreview.points.size < 2 -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(280.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = stringResource(R.string.walk_route_preview_empty),
+                                color = TextOnDarkSecondary,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+
+                    else -> {
+                        WalkRouteMapView(
+                            points = routePreview.points,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(280.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalkRouteMapView(
+    points: List<WalkPoint>,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val startMarkerIcon = remember(context) {
+        createRouteEndpointMarkerDrawable(context, Color.parseColor("#4CAF50"))
+    }
+    val endMarkerIcon = remember(context) {
+        createRouteEndpointMarkerDrawable(context, Color.parseColor("#FF7043"))
+    }
+    val routePoints = remember(points) { points.map { GeoPoint(it.latitude, it.longitude) } }
+    val mapView = remember(context) {
+        MapView(context).apply {
+            setTileSource(TileSourceFactory.MAPNIK)
+            setMultiTouchControls(true)
+            controller.setZoom(16.0)
+        }
+    }
+
+    LaunchedEffect(routePoints) {
+        mapView.overlays.clear()
+
+        if (routePoints.isNotEmpty()) {
+            val routeLine = Polyline().apply {
+                outlinePaint.color = Color.parseColor("#4FC3F7")
+                outlinePaint.strokeWidth = 12f
+                outlinePaint.alpha = 240
+                outlinePaint.style = Paint.Style.STROKE
+                outlinePaint.strokeCap = Paint.Cap.ROUND
+                outlinePaint.strokeJoin = Paint.Join.ROUND
+                setPoints(routePoints)
+            }
+            mapView.overlays.add(routeLine)
+
+            val startMarker = Marker(mapView).apply {
+                position = routePoints.first()
+                icon = startMarkerIcon
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                title = "Start"
+            }
+            mapView.overlays.add(startMarker)
+
+            if (routePoints.size > 1) {
+                val endMarker = Marker(mapView).apply {
+                    position = routePoints.last()
+                    icon = endMarkerIcon
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    title = "Finish"
+                }
+                mapView.overlays.add(endMarker)
+            }
+
+            if (routePoints.size == 1) {
+                mapView.controller.setCenter(routePoints.first())
+                mapView.controller.setZoom(17.0)
+            } else {
+                mapView.zoomToBoundingBox(createBoundingBox(routePoints), true, 64)
+            }
+        }
+
+        mapView.invalidate()
+    }
+
+    DisposableEffect(mapView) {
+        onDispose {
+            mapView.onDetach()
+        }
+    }
+
+    AndroidView(
+        factory = { mapView },
+        modifier = modifier,
+        update = { }
+    )
 }
 
 private fun formatDuration(durationMs: Long): String {
